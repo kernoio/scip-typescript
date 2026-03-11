@@ -38,7 +38,8 @@ export interface GlobalCache {
 }
 
 export function mainCommand(
-  indexAction: (projects: string[], options: MultiProjectOptions) => void
+  indexAction: (projects: string[], options: MultiProjectOptions) => void,
+  detectAction: (cwd: string) => void
 ): Command {
   const command = new Command()
   command
@@ -91,6 +92,13 @@ export function mainCommand(
       }
 
       indexAction(parsedProjects as string[], options)
+    })
+  command
+    .command('detect')
+    .option('--cwd <path>', 'the working directory', process.cwd())
+    .description('Detect project structure and workspace topology')
+    .action((parsedOptions: { cwd: string }) => {
+      detectAction(parsedOptions.cwd)
     })
   return command
 }

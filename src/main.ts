@@ -15,14 +15,16 @@ import {
   MultiProjectOptions,
   ProjectOptions,
 } from './CommandLineOptions'
+import { detectCommand } from './detectCommand'
 import { inferTsconfig } from './inferTsconfig'
 import { ProjectIndexer } from './ProjectIndexer'
 import * as scip from './scip'
 
 export function main(): void {
-  mainCommand((projects, options) => indexCommand(projects, options)).parse(
-    process.argv
-  )
+  mainCommand(
+    (projects, options) => indexCommand(projects, options),
+    (cwd) => detectCommand(cwd)
+  ).parse(process.argv)
   return
 }
 
