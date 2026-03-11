@@ -2,12 +2,13 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as ts from 'typescript'
 
-interface ProjectNode {
+export interface ProjectNode {
   name: string
   path: string
   language?: string
   buildTool?: string
   config?: {
+    type: 'typescript'
     configFile: string
     allowJs?: boolean
   }
@@ -29,7 +30,23 @@ const SKIP_DIRS = new Set([
   '.yarn',
 ])
 
-export function detectCommand(cwd: string): void {
+const TEST_PATTERNS = new Set([
+  '__tests__',
+  '__mocks__',
+  '__snapshots__',
+  'test',
+  'tests',
+  'fixtures',
+])
+
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.cjs', '.cts'])
+
+function isTestFile(fileName: string): boolean {
+  const base = path.basename(fileName)
+  return base.includes('.test.') || base.includes('.spec.') || base.includes('.test-d.')
+}
+
+export function detect(cwd: string): { projects: ProjectNode[] } {
   const rootDir = path.resolve(cwd)
   const allPackageJsonDirs = walkForPackageJsonDirs(rootDir)
 
@@ -81,8 +98,12 @@ export function detectCommand(cwd: string): void {
     }
   }
 
-  const result = cleanOutput({ projects: rootNodes })
-  console.log(JSON.stringify(result, null, 2))
+  return { projects: rootNodes }
+}
+
+export function detectCommand(cwd: string): void {
+  const result = detect(cwd)
+  console.log(JSON.stringify(cleanOutput(result), null, 2))
 }
 
 function buildNode(
@@ -119,7 +140,18 @@ function buildNode(
     ...(pkg?.['dependencies'] as Record<string, string> | undefined),
     ...(pkg?.['devDependencies'] as Record<string, string> | undefined),
   }
-  const dependencies = Object.keys(allDeps).filter(dep => allPackageNames.has(dep))
+  const ownName = pkg?.['name'] as string | undefined
+  const declaredDeps = new Set(Object.keys(allDeps).filter(dep => dep !== ownName && allPackageNames.has(dep)))
+
+  const undeclaredSiblings = new Set<string>()
+  for (const name of allPackageNames) {
+    if (name !== ownName && !declaredDeps.has(name)) {
+      undeclaredSiblings.add(name)
+    }
+  }
+
+  const implicitDeps = undeclaredSiblings.size > 0 ? scanImportedSiblings(dir, undeclaredSiblings) : []
+  const dependencies = [...new Set([...declaredDeps, ...implicitDeps])].sort()
 
   const subProjects: ProjectNode[] = []
   for (const childDir of childDirs) {
@@ -189,7 +221,7 @@ function readPackageJson(dir: string): Record<string, unknown> | undefined {
   }
 }
 
-function extractWorkspaceGlobs(dir: string, pkg: Record<string, unknown> | undefined): string[] {
+export function extractWorkspaceGlobs(dir: string, pkg: Record<string, unknown> | undefined): string[] {
   const pnpmWorkspacePath = path.join(dir, 'pnpm-workspace.yaml')
   if (fs.existsSync(pnpmWorkspacePath)) {
     const globs: string[] = []
@@ -258,28 +290,28 @@ function detectBuildToolInDir(dir: string): string | undefined {
   return undefined
 }
 
-function detectConfig(dir: string): { configFile: string; allowJs?: boolean } | undefined {
+function detectConfig(dir: string): { type: 'typescript'; configFile: string; allowJs?: boolean } | undefined {
   const tsconfigPath = path.join(dir, 'tsconfig.json')
   if (fs.existsSync(tsconfigPath)) {
     const readResult = ts.readConfigFile(tsconfigPath, p => ts.sys.readFile(p))
     if (!readResult.error) {
       const config = readResult.config as { compilerOptions?: { allowJs?: boolean } }
       const allowJs = config.compilerOptions?.allowJs === true
-      const entry: { configFile: string; allowJs?: boolean } = { configFile: 'tsconfig.json' }
+      const entry: { type: 'typescript'; configFile: string; allowJs?: boolean } = { type: 'typescript', configFile: 'tsconfig.json' }
       if (allowJs) {
         entry.allowJs = true
       }
       return entry
     }
-    return { configFile: 'tsconfig.json' }
+    return { type: 'typescript', configFile: 'tsconfig.json' }
   }
   if (fs.existsSync(path.join(dir, 'jsconfig.json'))) {
-    return { configFile: 'jsconfig.json' }
+    return { type: 'typescript', configFile: 'jsconfig.json' }
   }
   return undefined
 }
 
-function resolveWorkspaceGlobs(rootDir: string, globs: string[]): string[] {
+export function resolveWorkspaceGlobs(rootDir: string, globs: string[]): string[] {
   const results: string[] = []
   for (const glob of globs) {
     if (glob.endsWith('/**')) {
@@ -339,6 +371,92 @@ function collectPackageDirsRecursive(parent: string, results: string[]): void {
   }
 }
 
+function scanImportedSiblings(dir: string, siblingNames: Set<string>): string[] {
+  const discovered = new Set<string>()
+  walkSourceFiles(dir, (filePath) => {
+    const text = fs.readFileSync(filePath, 'utf-8')
+    const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, false)
+    for (const stmt of sourceFile.statements) {
+      const specifier = extractModuleSpecifier(stmt)
+      if (specifier === undefined) continue
+      const packageName = extractPackageName(specifier)
+      if (packageName && siblingNames.has(packageName)) {
+        discovered.add(packageName)
+      }
+    }
+  })
+  return [...discovered]
+}
+
+function walkSourceFiles(dir: string, callback: (filePath: string) => void): void {
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name) || TEST_PATTERNS.has(entry.name)) continue
+      walkSourceFiles(path.join(dir, entry.name), callback)
+    } else if (entry.isFile()) {
+      const ext = getExtension(entry.name)
+      if (!SOURCE_EXTENSIONS.has(ext)) continue
+      if (entry.name.match(/\.d\.[cm]?ts$/)) continue
+      if (isTestFile(entry.name)) continue
+      callback(path.join(dir, entry.name))
+    }
+  }
+}
+
+function getExtension(fileName: string): string {
+  const dtsMatch = fileName.match(/\.d\.[cm]?ts$/)
+  if (dtsMatch) return dtsMatch[0]
+  const match = fileName.match(/\.[^.]+$/)
+  return match ? match[0] : ''
+}
+
+function extractModuleSpecifier(stmt: ts.Statement): string | undefined {
+  if (ts.isImportDeclaration(stmt) && ts.isStringLiteral(stmt.moduleSpecifier)) {
+    return stmt.moduleSpecifier.text
+  }
+  if (ts.isExportDeclaration(stmt) && stmt.moduleSpecifier && ts.isStringLiteral(stmt.moduleSpecifier)) {
+    return stmt.moduleSpecifier.text
+  }
+  if (ts.isExpressionStatement(stmt)) {
+    const expr = stmt.expression
+    if (ts.isCallExpression(expr) && expr.arguments.length > 0) {
+      const callee = expr.expression
+      if (ts.isIdentifier(callee) && callee.text === 'require') {
+        const arg = expr.arguments[0]
+        if (ts.isStringLiteral(arg)) return arg.text
+      }
+    }
+  }
+  if (ts.isVariableStatement(stmt)) {
+    for (const decl of stmt.declarationList.declarations) {
+      if (decl.initializer && ts.isCallExpression(decl.initializer)) {
+        const callee = decl.initializer.expression
+        if (ts.isIdentifier(callee) && callee.text === 'require' && decl.initializer.arguments.length > 0) {
+          const arg = decl.initializer.arguments[0]
+          if (ts.isStringLiteral(arg)) return arg.text
+        }
+      }
+    }
+  }
+  return undefined
+}
+
+function extractPackageName(specifier: string): string | undefined {
+  if (specifier.startsWith('.') || specifier.startsWith('/')) return undefined
+  if (specifier.startsWith('@')) {
+    const parts = specifier.split('/')
+    if (parts.length >= 2) return parts[0] + '/' + parts[1]
+    return undefined
+  }
+  return specifier.split('/')[0]
+}
+
 function countFiles(
   dir: string,
   tsCount: { value: number },
@@ -353,11 +471,12 @@ function countFiles(
 
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) {
+      if (!SKIP_DIRS.has(entry.name) && !TEST_PATTERNS.has(entry.name)) {
         countFiles(path.join(dir, entry.name), tsCount, jsCount)
       }
     } else if (entry.isFile()) {
       const name = entry.name
+      if (isTestFile(name)) continue
       if (name.endsWith('.d.ts')) {
         continue
       }

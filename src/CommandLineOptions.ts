@@ -19,6 +19,7 @@ export interface MultiProjectOptions {
   cwd: string
   output: string
   indexedProjects: Set<string>
+  filter?: string
 }
 
 /** Configuration options to index a single TypeScript project. */
@@ -75,6 +76,7 @@ export function mainCommand(
       'skip files that have a larger byte size than the provided value. Supported formats: 1kb, 1mb, 1gb.',
       '1mb'
     )
+    .option('--filter <package>', 'index only the named package, with workspace-aware type resolution')
     .argument('[projects...]')
     .action((parsedProjects, parsedOptions) => {
       const options = parsedOptions as MultiProjectOptions

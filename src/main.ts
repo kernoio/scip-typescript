@@ -15,7 +15,7 @@ import {
   MultiProjectOptions,
   ProjectOptions,
 } from './CommandLineOptions'
-import { detectCommand } from './detectCommand'
+import { detect, detectCommand, ProjectNode } from './detectCommand'
 import { inferTsconfig } from './inferTsconfig'
 import { ProjectIndexer } from './ProjectIndexer'
 import * as scip from './scip'
@@ -32,6 +32,10 @@ export function indexCommand(
   projects: string[],
   options: MultiProjectOptions
 ): void {
+  if (options.filter) {
+    indexFiltered(options)
+    return
+  }
   if (options.yarnWorkspaces) {
     projects.push(...listYarnWorkspaces(options.cwd, 'tryYarn1'))
   } else if (options.yarnBerryWorkspaces) {
@@ -97,6 +101,149 @@ export function indexCommand(
       console.log(
         `error: no files got indexed. To fix this problem, make sure that the TypeScript projects ${prettyProjects} contain input files or reference other projects.`
       )
+    }
+  }
+}
+
+function indexFiltered(options: MultiProjectOptions): void {
+  options.cwd = makeAbsolutePath(process.cwd(), options.cwd)
+  options.output = makeAbsolutePath(options.cwd, options.output)
+
+  const topology = detect(options.cwd)
+
+  const allPackages: Array<{ name: string; absPath: string }> = []
+  let targetPackage: { name: string; absPath: string } | undefined
+
+  function collectPackages(nodes: ProjectNode[]): void {
+    for (const node of nodes) {
+      const absPath = path.resolve(options.cwd, node.path)
+      allPackages.push({ name: node.name, absPath })
+      if (node.name === options.filter) {
+        targetPackage = { name: node.name, absPath }
+      }
+      if (node.subProjects) {
+        collectPackages(node.subProjects)
+      }
+    }
+  }
+  collectPackages(topology.projects)
+
+  if (!targetPackage) {
+    console.error(
+      `error: package '${options.filter}' not found in workspace. Available packages: ${allPackages.map(p => p.name).join(', ')}`
+    )
+    process.exitCode = 1
+    return
+  }
+
+  const pathsMapping: Record<string, string[]> = {}
+  for (const pkg of allPackages) {
+    if (pkg.name === options.filter) {
+      continue
+    }
+    const relPath = path.relative(options.cwd, pkg.absPath)
+    pathsMapping[pkg.name] = ['./' + relPath]
+    pathsMapping[pkg.name + '/*'] = ['./' + relPath + '/*']
+  }
+
+  const rootTsconfigPath = path.join(options.cwd, 'tsconfig.json')
+  const rawCompilerOptions: Record<string, unknown> = {}
+
+  if (ts.sys.fileExists(rootTsconfigPath)) {
+    const readResult = ts.readConfigFile(rootTsconfigPath, p => ts.sys.readFile(p))
+    if (!readResult.error && readResult.config?.compilerOptions) {
+      Object.assign(rawCompilerOptions, readResult.config.compilerOptions)
+    }
+  }
+
+  const packageTsconfigPath = path.join(targetPackage.absPath, 'tsconfig.json')
+  const packageJsconfigPath = path.join(targetPackage.absPath, 'jsconfig.json')
+
+  if (ts.sys.fileExists(packageTsconfigPath)) {
+    const readResult = ts.readConfigFile(packageTsconfigPath, p => ts.sys.readFile(p))
+    if (!readResult.error && readResult.config?.compilerOptions) {
+      Object.assign(rawCompilerOptions, readResult.config.compilerOptions)
+    }
+  } else if (ts.sys.fileExists(packageJsconfigPath)) {
+    Object.assign(rawCompilerOptions, {
+      allowJs: true,
+      maxNodeModuleJsDepth: 2,
+      allowSyntheticDefaultImports: true,
+    })
+  }
+
+  Object.assign(rawCompilerOptions, {
+    baseUrl: '.',
+    paths: pathsMapping,
+    noEmit: true,
+    skipLibCheck: true,
+  })
+
+  const targetRelPath = path.relative(options.cwd, targetPackage.absPath)
+  const syntheticConfig = {
+    compilerOptions: rawCompilerOptions,
+    include: [targetRelPath + '/**/*'],
+  }
+
+  const config = ts.parseJsonConfigFileContent(syntheticConfig, ts.sys, options.cwd)
+
+  if (config.fileNames.length === 0) {
+    console.error(
+      `error: no files found in package '${options.filter}' at ${targetPackage.absPath}`
+    )
+    process.exitCode = 1
+    return
+  }
+
+  const output = fs.openSync(options.output, 'w')
+  let documentCount = 0
+  const writeIndex = (index: scip.scip.Index): void => {
+    documentCount += index.documents.length
+    fs.writeSync(output, index.serializeBinary())
+  }
+
+  const cache: GlobalCache = {
+    sources: new Map(),
+    parsedCommandLines: new Map(),
+  }
+
+  try {
+    writeIndex(
+      new scip.scip.Index({
+        metadata: new scip.scip.Metadata({
+          project_root: url.pathToFileURL(options.cwd).toString(),
+          text_document_encoding: scip.scip.TextEncoding.UTF8,
+          tool_info: new scip.scip.ToolInfo({
+            name: 'scip-typescript',
+            version: packageJson.version,
+            arguments: [],
+          }),
+        }),
+      })
+    )
+
+    if (!options.indexedProjects) {
+      options.indexedProjects = new Set()
+    }
+
+    new ProjectIndexer(
+      config,
+      {
+        ...options,
+        projectRoot: targetPackage.absPath,
+        projectDisplayName: options.filter!,
+        writeIndex,
+      } as ProjectOptions,
+      cache
+    ).index()
+  } finally {
+    fs.close(output)
+    if (documentCount > 0) {
+      console.log(`done ${options.output}`)
+    } else {
+      process.exitCode = 1
+      fs.rmSync(options.output)
+      console.log(`error: no files got indexed for package '${options.filter}'`)
     }
   }
 }
