@@ -46,7 +46,7 @@ function isTestFile(fileName: string): boolean {
   return base.includes('.test.') || base.includes('.spec.') || base.includes('.test-d.')
 }
 
-export function detect(cwd: string): { projects: ProjectNode[] } {
+export function detect(cwd: string): { tool: string; projects: ProjectNode[] } {
   const rootDir = path.resolve(cwd)
   const allPackageJsonDirs = walkForPackageJsonDirs(rootDir)
 
@@ -98,7 +98,7 @@ export function detect(cwd: string): { projects: ProjectNode[] } {
     }
   }
 
-  return { projects: rootNodes }
+  return { tool: 'typescript', projects: rootNodes }
 }
 
 export function detectCommand(cwd: string): void {
