@@ -320,6 +320,17 @@ function loadConfigFile(file: string): ts.ParsedCommandLine | undefined {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const config = readResult.config
   // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  if (config.extends) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    const extendsPath = path.resolve(path.dirname(absolute), config.extends)
+    if (!ts.sys.fileExists(extendsPath)) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      console.warn(`Warning: Cannot resolve extends "${config.extends}", continuing without inherited settings`)
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      delete config.extends
+    }
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   if (config.compilerOptions !== undefined) {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     config.compilerOptions = {
