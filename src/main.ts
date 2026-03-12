@@ -179,7 +179,7 @@ function indexFiltered(options: MultiProjectOptions): void {
     skipLibCheck: true,
   })
 
-  const targetRelPath = path.relative(options.cwd, targetPackage.absPath)
+  const targetRelPath = path.relative(options.cwd, targetPackage.absPath) || '.'
   const syntheticConfig = {
     compilerOptions: rawCompilerOptions,
     include: [targetRelPath + '/**/*'],
