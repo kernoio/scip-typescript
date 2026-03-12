@@ -19,6 +19,7 @@ export interface MultiProjectOptions {
   cwd: string
   output: string
   indexedProjects: Set<string>
+  filter?: string
 }
 
 /** Configuration options to index a single TypeScript project. */
@@ -38,7 +39,8 @@ export interface GlobalCache {
 }
 
 export function mainCommand(
-  indexAction: (projects: string[], options: MultiProjectOptions) => void
+  indexAction: (projects: string[], options: MultiProjectOptions) => void,
+  detectAction: (cwd: string) => void
 ): Command {
   const command = new Command()
   command
@@ -74,6 +76,7 @@ export function mainCommand(
       'skip files that have a larger byte size than the provided value. Supported formats: 1kb, 1mb, 1gb.',
       '1mb'
     )
+    .option('--filter <package>', 'index only the named package, with workspace-aware type resolution')
     .argument('[projects...]')
     .action((parsedProjects, parsedOptions) => {
       const options = parsedOptions as MultiProjectOptions
@@ -91,6 +94,13 @@ export function mainCommand(
       }
 
       indexAction(parsedProjects as string[], options)
+    })
+  command
+    .command('detect')
+    .option('--cwd <path>', 'the working directory', process.cwd())
+    .description('Detect project structure and workspace topology')
+    .action((parsedOptions: { cwd: string }) => {
+      detectAction(parsedOptions.cwd)
     })
   return command
 }

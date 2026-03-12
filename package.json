@@ -13,7 +13,8 @@
     "build": "node ./node_modules/typescript/bin/tsc -b .",
     "test": "uvu -r tsm --ignore dist",
     "update-snapshots": "uvu -r tsm --ignore dist --update-snapshots",
-    "prepare": "cd snapshots && yarn && cd input/multi-project && yarn && cd ../pnpm-workspaces && pnpm install"
+    "prepare": "cd snapshots && yarn && cd input/multi-project && yarn && cd ../pnpm-workspaces && pnpm install",
+    "bundle": "esbuild src/main.ts --bundle --minify --platform=node --format=cjs --outfile=dist/scip-typescript.cjs"
   },
   "repository": {
     "type": "git",
@@ -59,6 +60,7 @@
     "tsm": "^2.3.0",
     "tsx": "^4.19.1",
     "typescript-eslint": "7.18.0",
-    "uvu": "^0.5.6"
+    "uvu": "^0.5.6",
+    "esbuild": "^0.24.0"
   }
 }

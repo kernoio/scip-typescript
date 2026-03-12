@@ -11,13 +11,16 @@ function checkIndexParser(
   test(args.join(' '), () => {
     let isAssertionTriggered = false
     const actualArguments = ['node', 'scip-typescript.js', 'index', ...args]
-    mainCommand((projects, options) => {
-      assert.equal(options, { ...options, ...expectedOptions })
-      if (expectedProjects) {
-        assert.equal(projects, expectedProjects)
-      }
-      isAssertionTriggered = true
-    }).parse(actualArguments)
+    mainCommand(
+      (projects, options) => {
+        assert.equal(options, { ...options, ...expectedOptions })
+        if (expectedProjects) {
+          assert.equal(projects, expectedProjects)
+        }
+        isAssertionTriggered = true
+      },
+      () => {}
+    ).parse(actualArguments)
     assert.ok(isAssertionTriggered)
   })
 }
