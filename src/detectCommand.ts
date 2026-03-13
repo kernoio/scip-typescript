@@ -130,7 +130,7 @@ function buildNode(
 
   const buildTool = detectBuildTool(dir, rootDir, parentBuildTool)
   const config = detectConfig(dir)
-  const buildFiles = collectBuildFiles(config)
+  const buildFiles = collectBuildFiles(dir, buildTool, config)
 
   const allDeps: Record<string, string> = {
     ...(pkg?.['dependencies'] as Record<string, string> | undefined),
@@ -279,14 +279,57 @@ function detectBuildToolInDir(dir: string): string | undefined {
   if (fs.existsSync(path.join(dir, 'package-lock.json'))) {
     return 'npm'
   }
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')) as Record<string, unknown>
+    const packageManager = pkg['packageManager']
+    if (typeof packageManager === 'string') {
+      const toolName = packageManager.split('@')[0]
+      if (toolName === 'yarn' || toolName === 'pnpm' || toolName === 'npm') {
+        return toolName
+      }
+    }
+  } catch {
+  }
+
+  if (fs.existsSync(path.join(dir, '.yarnrc')) || fs.existsSync(path.join(dir, '.yarnrc.yml'))) {
+    return 'yarn'
+  }
+  if (fs.existsSync(path.join(dir, '.pnpmfile.cjs'))) {
+    return 'pnpm'
+  }
+  if (fs.existsSync(path.join(dir, '.npmrc'))) {
+    return 'npm'
+  }
+
   return undefined
 }
 
-function collectBuildFiles(config: { configFile: string } | undefined): string[] {
+function collectBuildFiles(
+  dir: string,
+  buildTool: string | undefined,
+  config: { configFile: string } | undefined
+): string[] {
   const files = ['package.json']
+
   if (config) {
     files.push(config.configFile)
   }
+
+  if (buildTool === 'yarn' && fs.existsSync(path.join(dir, 'yarn.lock'))) {
+    files.push('yarn.lock')
+  } else if (buildTool === 'pnpm' && fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) {
+    files.push('pnpm-lock.yaml')
+  } else if (buildTool === 'npm' && fs.existsSync(path.join(dir, 'package-lock.json'))) {
+    files.push('package-lock.json')
+  }
+
+  for (const configFile of ['.yarnrc', '.yarnrc.yml', '.npmrc', '.pnpmfile.cjs']) {
+    if (fs.existsSync(path.join(dir, configFile))) {
+      files.push(configFile)
+    }
+  }
+
   return files
 }
 
