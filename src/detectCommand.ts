@@ -270,6 +270,9 @@ function detectBuildTool(dir: string, rootDir: string, parentBuildTool: string |
 }
 
 function detectBuildToolInDir(dir: string): string | undefined {
+  if (fs.existsSync(path.join(dir, 'bun.lock')) || fs.existsSync(path.join(dir, 'bun.lockb'))) {
+    return 'bun'
+  }
   if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) {
     return 'pnpm'
   }
@@ -285,13 +288,16 @@ function detectBuildToolInDir(dir: string): string | undefined {
     const packageManager = pkg['packageManager']
     if (typeof packageManager === 'string') {
       const toolName = packageManager.split('@')[0]
-      if (toolName === 'yarn' || toolName === 'pnpm' || toolName === 'npm') {
+      if (toolName === 'bun' || toolName === 'yarn' || toolName === 'pnpm' || toolName === 'npm') {
         return toolName
       }
     }
   } catch {
   }
 
+  if (fs.existsSync(path.join(dir, 'bunfig.toml'))) {
+    return 'bun'
+  }
   if (fs.existsSync(path.join(dir, '.yarnrc')) || fs.existsSync(path.join(dir, '.yarnrc.yml'))) {
     return 'yarn'
   }
@@ -316,7 +322,11 @@ function collectBuildFiles(
     files.push(config.configFile)
   }
 
-  if (buildTool === 'yarn' && fs.existsSync(path.join(dir, 'yarn.lock'))) {
+  if (buildTool === 'bun' && fs.existsSync(path.join(dir, 'bun.lock'))) {
+    files.push('bun.lock')
+  } else if (buildTool === 'bun' && fs.existsSync(path.join(dir, 'bun.lockb'))) {
+    files.push('bun.lockb')
+  } else if (buildTool === 'yarn' && fs.existsSync(path.join(dir, 'yarn.lock'))) {
     files.push('yarn.lock')
   } else if (buildTool === 'pnpm' && fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) {
     files.push('pnpm-lock.yaml')
@@ -324,7 +334,7 @@ function collectBuildFiles(
     files.push('package-lock.json')
   }
 
-  for (const configFile of ['.yarnrc', '.yarnrc.yml', '.npmrc', '.pnpmfile.cjs']) {
+  for (const configFile of ['bunfig.toml', '.yarnrc', '.yarnrc.yml', '.npmrc', '.pnpmfile.cjs']) {
     if (fs.existsSync(path.join(dir, configFile))) {
       files.push(configFile)
     }
