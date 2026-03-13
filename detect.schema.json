@@ -15,7 +15,7 @@
   "$defs": {
     "ProjectNode": {
       "type": "object",
-      "required": ["name", "path", "buildFiles"],
+      "required": ["name", "path", "buildFiles", "languages"],
       "properties": {
         "name": {
           "type": "string",
@@ -30,10 +30,11 @@
           "items": { "type": "string" },
           "description": "Build manifest and config files found for this project, relative to the project's path. Always includes package.json; also includes tsconfig.json or jsconfig.json when present."
         },
-        "language": {
-          "type": "string",
-          "description": "Detected primary language(s) of this project's source files.",
-          "default": "unknown"
+        "languages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Detected languages of this project's source files. Empty array means no source files were found."
         },
         "buildTool": {
           "type": "string",

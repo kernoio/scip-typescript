@@ -92,16 +92,7 @@ export function indexCommand(
     }
   } finally {
     fs.close(output)
-    if (documentCount > 0) {
-      console.log(`done ${options.output}`)
-    } else {
-      process.exitCode = 1
-      fs.rmSync(options.output)
-      const prettyProjects = JSON.stringify(projects)
-      console.log(
-        `error: no files got indexed. To fix this problem, make sure that the TypeScript projects ${prettyProjects} contain input files or reference other projects.`
-      )
-    }
+    console.log(`done ${options.output}`)
   }
 }
 

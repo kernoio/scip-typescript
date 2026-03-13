@@ -6,7 +6,7 @@ export interface ProjectNode {
   name: string
   path: string
   buildFiles: string[]
-  language?: string
+  languages: string[]
   buildTool?: string
   config?: {
     type: 'typescript'
@@ -39,8 +39,6 @@ const TEST_PATTERNS = new Set([
   'tests',
   'fixtures',
 ])
-
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.cjs', '.cts'])
 
 function isTestFile(fileName: string): boolean {
   const base = path.basename(fileName)
@@ -122,16 +120,12 @@ function buildNode(
   const tsCount = { value: 0 }
   const jsCount = { value: 0 }
   countFiles(dir, tsCount, jsCount)
-  const hasFiles = tsCount.value > 0 || jsCount.value > 0
-  let language: 'ts' | 'js' | 'mixed' | undefined
-  if (hasFiles) {
-    if (tsCount.value > 0 && jsCount.value > 0) {
-      language = 'mixed'
-    } else if (tsCount.value > 0) {
-      language = 'ts'
-    } else {
-      language = 'js'
-    }
+  const languages: string[] = []
+  if (tsCount.value > 0) {
+    languages.push('typescript')
+  }
+  if (jsCount.value > 0) {
+    languages.push('javascript')
   }
 
   const buildTool = detectBuildTool(dir, rootDir, parentBuildTool)
@@ -140,7 +134,6 @@ function buildNode(
 
   const allDeps: Record<string, string> = {
     ...(pkg?.['dependencies'] as Record<string, string> | undefined),
-    ...(pkg?.['devDependencies'] as Record<string, string> | undefined),
   }
   const ownName = pkg?.['name'] as string | undefined
   const declaredDeps = new Set(Object.keys(allDeps).filter(dep => dep !== ownName && allPackageNames.has(dep)))
@@ -152,7 +145,8 @@ function buildNode(
     }
   }
 
-  const implicitDeps = undeclaredSiblings.size > 0 ? scanImportedSiblings(dir, undeclaredSiblings) : []
+  const tsconfigPath = config ? path.join(dir, config.configFile) : undefined
+  const implicitDeps = undeclaredSiblings.size > 0 ? scanImportedSiblings(dir, undeclaredSiblings, pkg, tsconfigPath) : []
   const dependencies = [...new Set([...declaredDeps, ...implicitDeps])].sort()
 
   const subProjects: ProjectNode[] = []
@@ -164,11 +158,7 @@ function buildNode(
     subProjects.push(childNode)
   }
 
-  const node: ProjectNode = { name, path: relPath, buildFiles }
-
-  if (language !== undefined) {
-    node.language = language
-  }
+  const node: ProjectNode = { name, path: relPath, buildFiles, languages }
 
   if (buildTool) {
     node.buildTool = buildTool
@@ -381,9 +371,54 @@ function collectPackageDirsRecursive(parent: string, results: string[]): void {
   }
 }
 
-function scanImportedSiblings(dir: string, siblingNames: Set<string>): string[] {
+function resolveEntryPoint(dir: string, pkg: Record<string, unknown> | undefined): string | undefined {
+  if (!pkg) return undefined
+
+  const candidates: unknown[] = [pkg['main'], pkg['exports'], pkg['bin']]
+
+  for (const candidate of candidates) {
+    const resolved = extractFirstStringValue(candidate)
+    if (resolved) {
+      const fullPath = path.resolve(dir, resolved)
+      if (fs.existsSync(fullPath)) return fullPath
+    }
+  }
+
+  return undefined
+}
+
+function extractFirstStringValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (value !== null && typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      const found = extractFirstStringValue(v)
+      if (found) return found
+    }
+  }
+  return undefined
+}
+
+const ENTRY_POINT_RESOLUTION_OPTIONS: ts.CompilerOptions = {
+  moduleResolution: ts.ModuleResolutionKind.Node10,
+  allowJs: true,
+}
+
+function scanImportedSiblings(
+  dir: string,
+  siblingNames: Set<string>,
+  pkg: Record<string, unknown> | undefined,
+  tsconfigPath?: string
+): string[] {
   const discovered = new Set<string>()
-  walkSourceFiles(dir, (filePath) => {
+
+  const entryPoint = resolveEntryPoint(dir, pkg)
+  if (entryPoint) {
+    const visited = new Set<string>()
+    walkFromFile(entryPoint, siblingNames, discovered, visited)
+    return [...discovered]
+  }
+
+  const scanFile = (filePath: string) => {
     const text = fs.readFileSync(filePath, 'utf-8')
     const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, false)
     for (const stmt of sourceFile.statements) {
@@ -394,37 +429,61 @@ function scanImportedSiblings(dir: string, siblingNames: Set<string>): string[] 
         discovered.add(packageName)
       }
     }
-  })
-  return [...discovered]
+  }
+
+  if (tsconfigPath) {
+    const readResult = ts.readConfigFile(tsconfigPath, p => ts.sys.readFile(p))
+    if (!readResult.error) {
+      const basePath = path.dirname(tsconfigPath)
+      const parsed = ts.parseJsonConfigFileContent(readResult.config, ts.sys, basePath)
+      for (const filePath of parsed.fileNames) {
+        if (isTestFile(filePath) || filePath.match(/\.d\.[cm]?ts$/)) continue
+        scanFile(filePath)
+      }
+      return [...discovered]
+    }
+  }
+
+  return []
 }
 
-function walkSourceFiles(dir: string, callback: (filePath: string) => void): void {
-  let entries: fs.Dirent[]
+function walkFromFile(
+  filePath: string,
+  siblingNames: Set<string>,
+  discovered: Set<string>,
+  visited: Set<string>
+): void {
+  if (visited.has(filePath)) return
+  visited.add(filePath)
+
+  let text: string
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true })
+    text = fs.readFileSync(filePath, 'utf-8')
   } catch {
     return
   }
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name) || TEST_PATTERNS.has(entry.name)) continue
-      walkSourceFiles(path.join(dir, entry.name), callback)
-    } else if (entry.isFile()) {
-      const ext = getExtension(entry.name)
-      if (!SOURCE_EXTENSIONS.has(ext)) continue
-      if (entry.name.match(/\.d\.[cm]?ts$/)) continue
-      if (isTestFile(entry.name)) continue
-      callback(path.join(dir, entry.name))
+
+  const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, false)
+
+  for (const stmt of sourceFile.statements) {
+    const specifier = extractModuleSpecifier(stmt)
+    if (specifier === undefined) continue
+
+    if (specifier.startsWith('.') || specifier.startsWith('/')) {
+      const resolved = ts.resolveModuleName(specifier, filePath, ENTRY_POINT_RESOLUTION_OPTIONS, ts.sys)
+      const resolvedPath = resolved.resolvedModule?.resolvedFileName
+      if (resolvedPath) {
+        walkFromFile(resolvedPath, siblingNames, discovered, visited)
+      }
+    } else {
+      const packageName = extractPackageName(specifier)
+      if (packageName && siblingNames.has(packageName)) {
+        discovered.add(packageName)
+      }
     }
   }
 }
 
-function getExtension(fileName: string): string {
-  const dtsMatch = fileName.match(/\.d\.[cm]?ts$/)
-  if (dtsMatch) return dtsMatch[0]
-  const match = fileName.match(/\.[^.]+$/)
-  return match ? match[0] : ''
-}
 
 function extractModuleSpecifier(stmt: ts.Statement): string | undefined {
   if (ts.isImportDeclaration(stmt) && ts.isStringLiteral(stmt.moduleSpecifier)) {
@@ -507,9 +566,6 @@ function cleanOutput(obj: unknown): unknown {
     const cleaned: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
       if (value === undefined || value === null) {
-        continue
-      }
-      if (Array.isArray(value) && value.length === 0) {
         continue
       }
       cleaned[key] = cleanOutput(value)
