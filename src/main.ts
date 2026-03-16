@@ -132,19 +132,18 @@ function indexFiltered(options: MultiProjectOptions): void {
     if (pkg.name === options.filter) {
       continue
     }
-    const relPath = path.relative(options.cwd, pkg.absPath)
+    const relPath = './' + path.relative(targetPackage.absPath, pkg.absPath)
     const pkgJsonPath = path.join(pkg.absPath, 'package.json')
     const pkgJson = fs.existsSync(pkgJsonPath)
       ? JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'))
       : undefined
     const entryPoint = resolveEntryPoint(pkg.absPath, pkgJson)
     if (entryPoint) {
-      const entryRelPath = './' + path.relative(options.cwd, entryPoint)
-      pathsMapping[pkg.name] = [entryRelPath]
+      pathsMapping[pkg.name] = ['./' + path.relative(targetPackage.absPath, entryPoint)]
     } else {
-      pathsMapping[pkg.name] = ['./' + relPath]
+      pathsMapping[pkg.name] = [relPath]
     }
-    pathsMapping[pkg.name + '/*'] = ['./' + relPath + '/*']
+    pathsMapping[pkg.name + '/*'] = [relPath + '/*']
   }
 
   const rootTsconfigPath = path.join(options.cwd, 'tsconfig.json')
@@ -174,28 +173,19 @@ function indexFiltered(options: MultiProjectOptions): void {
   }
 
   const existingPaths = (rawCompilerOptions.paths ?? {}) as Record<string, string[]>
-  const rebasedPaths: Record<string, string[]> = {}
-  for (const [key, values] of Object.entries(existingPaths)) {
-    rebasedPaths[key] = values.map(v =>
-      v.startsWith('./') || v.startsWith('../')
-        ? './' + path.relative(options.cwd, path.join(targetPackage!.absPath, v))
-        : v
-    )
-  }
   Object.assign(rawCompilerOptions, {
     baseUrl: '.',
-    paths: { ...rebasedPaths, ...pathsMapping },
+    paths: { ...existingPaths, ...pathsMapping },
     noEmit: true,
     skipLibCheck: true,
   })
 
-  const targetRelPath = path.relative(options.cwd, targetPackage.absPath) || '.'
   const syntheticConfig = {
     compilerOptions: rawCompilerOptions,
-    include: [targetRelPath + '/**/*'],
+    include: ['./**/*'],
   }
 
-  const config = ts.parseJsonConfigFileContent(syntheticConfig, ts.sys, options.cwd)
+  const config = ts.parseJsonConfigFileContent(syntheticConfig, ts.sys, targetPackage.absPath)
 
   if (config.fileNames.length === 0) {
     console.error(
