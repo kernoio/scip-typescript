@@ -424,10 +424,10 @@ function collectPackageDirsRecursive(parent: string, results: string[]): void {
   }
 }
 
-function resolveEntryPoint(dir: string, pkg: Record<string, unknown> | undefined): string | undefined {
+export function resolveEntryPoint(dir: string, pkg: Record<string, unknown> | undefined): string | undefined {
   if (!pkg) return undefined
 
-  const candidates: unknown[] = [pkg['main'], pkg['exports'], pkg['bin']]
+  const candidates: unknown[] = [pkg['module'], pkg['main'], pkg['exports'], pkg['bin']]
 
   for (const candidate of candidates) {
     const resolved = extractFirstStringValue(candidate)

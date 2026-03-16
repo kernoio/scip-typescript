@@ -15,7 +15,7 @@ import {
   MultiProjectOptions,
   ProjectOptions,
 } from './CommandLineOptions'
-import { detect, detectCommand, ProjectNode } from './detectCommand'
+import { detect, detectCommand, ProjectNode, resolveEntryPoint } from './detectCommand'
 import { inferTsconfig } from './inferTsconfig'
 import { ProjectIndexer } from './ProjectIndexer'
 import * as scip from './scip'
@@ -133,7 +133,17 @@ function indexFiltered(options: MultiProjectOptions): void {
       continue
     }
     const relPath = path.relative(options.cwd, pkg.absPath)
-    pathsMapping[pkg.name] = ['./' + relPath]
+    const pkgJsonPath = path.join(pkg.absPath, 'package.json')
+    const pkgJson = fs.existsSync(pkgJsonPath)
+      ? JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'))
+      : undefined
+    const entryPoint = resolveEntryPoint(pkg.absPath, pkgJson)
+    if (entryPoint) {
+      const entryRelPath = './' + path.relative(options.cwd, entryPoint)
+      pathsMapping[pkg.name] = [entryRelPath]
+    } else {
+      pathsMapping[pkg.name] = ['./' + relPath]
+    }
     pathsMapping[pkg.name + '/*'] = ['./' + relPath + '/*']
   }
 
