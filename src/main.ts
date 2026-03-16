@@ -163,9 +163,18 @@ function indexFiltered(options: MultiProjectOptions): void {
     })
   }
 
+  const existingPaths = (rawCompilerOptions.paths ?? {}) as Record<string, string[]>
+  const rebasedPaths: Record<string, string[]> = {}
+  for (const [key, values] of Object.entries(existingPaths)) {
+    rebasedPaths[key] = values.map(v =>
+      v.startsWith('./') || v.startsWith('../')
+        ? './' + path.relative(options.cwd, path.join(targetPackage!.absPath, v))
+        : v
+    )
+  }
   Object.assign(rawCompilerOptions, {
     baseUrl: '.',
-    paths: pathsMapping,
+    paths: { ...rebasedPaths, ...pathsMapping },
     noEmit: true,
     skipLibCheck: true,
   })
