@@ -207,7 +207,7 @@ function walkDir(dir: string, results: string[]): void {
 
 function readPackageJson(dir: string): Record<string, unknown> | undefined {
   try {
-    return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')) as Record<string, unknown>
+    return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8').replace(/^\uFEFF/, '')) as Record<string, unknown>
   } catch {
     return undefined
   }
@@ -284,7 +284,7 @@ function detectBuildToolInDir(dir: string): string | undefined {
   }
 
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')) as Record<string, unknown>
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8').replace(/^\uFEFF/, '')) as Record<string, unknown>
     const packageManager = pkg['packageManager']
     if (typeof packageManager === 'string') {
       const toolName = packageManager.split('@')[0]

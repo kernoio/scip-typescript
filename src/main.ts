@@ -135,7 +135,7 @@ function indexFiltered(options: MultiProjectOptions): void {
     const relPath = './' + path.relative(targetPackage.absPath, pkg.absPath)
     const pkgJsonPath = path.join(pkg.absPath, 'package.json')
     const pkgJson = fs.existsSync(pkgJsonPath)
-      ? JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'))
+      ? JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8').replace(/^\uFEFF/, ''))
       : undefined
     const entryPoint = resolveEntryPoint(pkg.absPath, pkgJson)
     if (entryPoint) {
