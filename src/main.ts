@@ -15,7 +15,7 @@ import {
   MultiProjectOptions,
   ProjectOptions,
 } from './CommandLineOptions'
-import { detect, detectCommand, ProjectNode, resolveEntryPoint } from './detectCommand'
+import { detect, detectCommand, FlatProjectNode, resolveEntryPoint } from './detectCommand'
 import { inferTsconfig } from './inferTsconfig'
 import { ProjectIndexer } from './ProjectIndexer'
 import * as scip from './scip'
@@ -105,19 +105,18 @@ function indexFiltered(options: MultiProjectOptions): void {
   const allPackages: Array<{ name: string; absPath: string }> = []
   let targetPackage: { name: string; absPath: string } | undefined
 
-  function collectPackages(nodes: ProjectNode[]): void {
+  function collectPackages(nodes: FlatProjectNode[]): void {
     for (const node of nodes) {
       const absPath = path.resolve(options.cwd, node.path)
       allPackages.push({ name: node.name, absPath })
       if (node.name === options.filter) {
         targetPackage = { name: node.name, absPath }
       }
-      if (node.subProjects) {
-        collectPackages(node.subProjects)
-      }
     }
   }
-  collectPackages(topology.projects)
+  for (const workspace of topology.workspaces) {
+    collectPackages(workspace.projects)
+  }
 
   if (!targetPackage) {
     console.error(

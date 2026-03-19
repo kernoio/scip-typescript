@@ -2,9 +2,12 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as ts from 'typescript'
 
-export interface ProjectNode {
+export interface FlatProjectNode {
   name: string
   path: string
+  parent: string | null
+  children: string[]
+  producesArtifacts: boolean
   buildFiles: string[]
   languages: string[]
   buildTool?: string
@@ -14,7 +17,34 @@ export interface ProjectNode {
     allowJs?: boolean
   }
   dependencies?: string[]
-  subProjects?: ProjectNode[]
+}
+
+export interface Workspace {
+  root: string
+  type: string
+  projects: FlatProjectNode[]
+}
+
+export interface DetectOutput {
+  tool: string
+  workspaces: Workspace[]
+}
+
+interface TreeNode {
+  name: string
+  dir: string
+  relPath: string
+  buildFiles: string[]
+  languages: string[]
+  buildTool?: string
+  config?: {
+    type: 'typescript'
+    configFile: string
+    allowJs?: boolean
+  }
+  dependencyNames: string[]
+  children: TreeNode[]
+  pkg: Record<string, unknown> | undefined
 }
 
 const SKIP_DIRS = new Set([
@@ -45,12 +75,13 @@ function isTestFile(fileName: string): boolean {
   return base.includes('.test.') || base.includes('.spec.') || base.includes('.test-d.')
 }
 
-export function detect(cwd: string): { tool: string; projects: ProjectNode[] } {
+export function detect(cwd: string): DetectOutput {
   const rootDir = path.resolve(cwd)
   const allPackageJsonDirs = walkForPackageJsonDirs(rootDir)
 
   const allPackageNames = new Set<string>()
   const dirToPkg = new Map<string, Record<string, unknown>>()
+  const nameToDir = new Map<string, string>()
 
   for (const dir of allPackageJsonDirs) {
     const pkg = readPackageJson(dir)
@@ -59,6 +90,7 @@ export function detect(cwd: string): { tool: string; projects: ProjectNode[] } {
       const name = pkg['name'] as string | undefined
       if (name) {
         allPackageNames.add(name)
+        nameToDir.set(name, dir)
       }
     }
   }
@@ -77,27 +109,38 @@ export function detect(cwd: string): { tool: string; projects: ProjectNode[] } {
     }
   }
 
-  const rootNodes: ProjectNode[] = []
+  const rootTreeNodes: TreeNode[] = []
 
   for (const dir of workspaceRoots) {
     if (!claimedDirs.has(dir)) {
       const pkg = dirToPkg.get(dir)
       const globs = extractWorkspaceGlobs(dir, pkg)
       const children = resolveWorkspaceGlobs(dir, globs)
-      const node = buildNode(dir, rootDir, pkg, children, dirToPkg, allPackageNames, null)
-      rootNodes.push(node)
+      const node = buildTreeNode(dir, rootDir, pkg, children, dirToPkg, allPackageNames, null)
+      rootTreeNodes.push(node)
     }
   }
 
   for (const dir of allPackageJsonDirs) {
     if (!claimedDirs.has(dir) && !workspaceRoots.includes(dir)) {
       const pkg = dirToPkg.get(dir)
-      const node = buildNode(dir, rootDir, pkg, [], dirToPkg, allPackageNames, null)
-      rootNodes.push(node)
+      const node = buildTreeNode(dir, rootDir, pkg, [], dirToPkg, allPackageNames, null)
+      rootTreeNodes.push(node)
     }
   }
 
-  return { tool: 'typescript', projects: rootNodes }
+  const workspaces: Workspace[] = rootTreeNodes.map(rootNode => {
+    const rootPkg = rootNode.pkg
+    const workspaceType = deriveWorkspaceType(rootNode.dir, rootNode.buildTool, rootPkg)
+    const flatProjects = flattenTree(rootNode, null, rootDir, nameToDir)
+    return {
+      root: rootNode.relPath,
+      type: workspaceType,
+      projects: flatProjects,
+    }
+  })
+
+  return { tool: 'typescript', workspaces }
 }
 
 export function detectCommand(cwd: string): void {
@@ -105,7 +148,78 @@ export function detectCommand(cwd: string): void {
   console.log(JSON.stringify(cleanOutput(result), null, 2))
 }
 
-function buildNode(
+function deriveWorkspaceType(dir: string, buildTool: string | undefined, pkg: Record<string, unknown> | undefined): string {
+  if (fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) {
+    return 'pnpm'
+  }
+  const hasWorkspacesField = pkg !== undefined && (
+    Array.isArray(pkg['workspaces']) ||
+    (pkg['workspaces'] !== null && typeof pkg['workspaces'] === 'object')
+  )
+  if (hasWorkspacesField) {
+    if (buildTool === 'npm') return 'npm'
+    if (buildTool === 'yarn') return 'yarn'
+    if (buildTool === 'bun') return 'bun'
+  }
+  return 'standalone'
+}
+
+function producesArtifacts(_dir: string, pkg: Record<string, unknown> | undefined, hasChildren: boolean): boolean {
+  if (!pkg) return true
+  if (pkg['workspaces'] !== undefined && pkg['workspaces'] !== null && hasChildren) return false
+  return true
+}
+
+function flattenTree(
+  node: TreeNode,
+  parentPath: string | null,
+  rootDir: string,
+  nameToDir: Map<string, string>
+): FlatProjectNode[] {
+  const result: FlatProjectNode[] = []
+  const childPaths = node.children.map(c => c.relPath)
+
+  const dependencyPaths = node.dependencyNames
+    .map(name => {
+      const depDir = nameToDir.get(name)
+      if (!depDir) return undefined
+      return path.relative(rootDir, depDir) || '.'
+    })
+    .filter((p): p is string => p !== undefined)
+    .sort()
+
+  const flat: FlatProjectNode = {
+    name: node.name,
+    path: node.relPath,
+    parent: parentPath,
+    children: childPaths,
+    producesArtifacts: producesArtifacts(node.dir, node.pkg, node.children.length > 0),
+    buildFiles: node.buildFiles,
+    languages: node.languages,
+  }
+
+  if (node.buildTool) {
+    flat.buildTool = node.buildTool
+  }
+
+  if (node.config) {
+    flat.config = node.config
+  }
+
+  if (dependencyPaths.length > 0) {
+    flat.dependencies = dependencyPaths
+  }
+
+  result.push(flat)
+
+  for (const child of node.children) {
+    result.push(...flattenTree(child, node.relPath, rootDir, nameToDir))
+  }
+
+  return result
+}
+
+function buildTreeNode(
   dir: string,
   rootDir: string,
   pkg: Record<string, unknown> | undefined,
@@ -113,7 +227,7 @@ function buildNode(
   dirToPkg: Map<string, Record<string, unknown>>,
   allPackageNames: Set<string>,
   parentBuildTool: string | null
-): ProjectNode {
+): TreeNode {
   const name = (pkg?.['name'] as string | undefined) ?? path.basename(dir)
   const relPath = path.relative(rootDir, dir) || '.'
 
@@ -139,44 +253,26 @@ function buildNode(
   const declaredDeps = new Set(Object.keys(allDeps).filter(dep => dep !== ownName && allPackageNames.has(dep)))
 
   const undeclaredSiblings = new Set<string>()
-  for (const name of allPackageNames) {
-    if (name !== ownName && !declaredDeps.has(name)) {
-      undeclaredSiblings.add(name)
+  for (const sibName of allPackageNames) {
+    if (sibName !== ownName && !declaredDeps.has(sibName)) {
+      undeclaredSiblings.add(sibName)
     }
   }
 
   const tsconfigPath = config ? path.join(dir, config.configFile) : undefined
   const implicitDeps = undeclaredSiblings.size > 0 ? scanImportedSiblings(dir, undeclaredSiblings, pkg, tsconfigPath) : []
-  const dependencies = [...new Set([...declaredDeps, ...implicitDeps])].sort()
+  const dependencyNames = [...new Set([...declaredDeps, ...implicitDeps])].sort()
 
-  const subProjects: ProjectNode[] = []
+  const children: TreeNode[] = []
   for (const childDir of childDirs) {
     const childPkg = dirToPkg.get(childDir)
     const childGlobs = extractWorkspaceGlobs(childDir, childPkg)
     const grandchildren = childGlobs.length > 0 ? resolveWorkspaceGlobs(childDir, childGlobs) : []
-    const childNode = buildNode(childDir, rootDir, childPkg, grandchildren, dirToPkg, allPackageNames, buildTool ?? null)
-    subProjects.push(childNode)
+    const childNode = buildTreeNode(childDir, rootDir, childPkg, grandchildren, dirToPkg, allPackageNames, buildTool ?? null)
+    children.push(childNode)
   }
 
-  const node: ProjectNode = { name, path: relPath, buildFiles, languages }
-
-  if (buildTool) {
-    node.buildTool = buildTool
-  }
-
-  if (config) {
-    node.config = config
-  }
-
-  if (dependencies.length > 0) {
-    node.dependencies = dependencies
-  }
-
-  if (subProjects.length > 0) {
-    node.subProjects = subProjects
-  }
-
-  return node
+  return { name, dir, relPath, buildFiles, languages, buildTool, config, dependencyNames, children, pkg }
 }
 
 function walkForPackageJsonDirs(rootDir: string): string[] {
@@ -332,6 +428,10 @@ function collectBuildFiles(
     files.push('pnpm-lock.yaml')
   } else if (buildTool === 'npm' && fs.existsSync(path.join(dir, 'package-lock.json'))) {
     files.push('package-lock.json')
+  }
+
+  if (fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) {
+    files.push('pnpm-workspace.yaml')
   }
 
   for (const configFile of ['bunfig.toml', '.yarnrc', '.yarnrc.yml', '.npmrc', '.pnpmfile.cjs']) {

@@ -4,18 +4,42 @@
   "title": "SCIP Detect Output",
   "description": "Universal project detection schema for scip-* tools. Describes the project topology of a repository.",
   "type": "object",
-  "required": ["projects"],
+  "required": ["tool", "workspaces"],
   "properties": {
-    "projects": {
+    "tool": {
+      "type": "string",
+      "description": "The language or tool family that produced this output (e.g. typescript)."
+    },
+    "workspaces": {
       "type": "array",
       "default": [],
-      "items": { "$ref": "#/$defs/ProjectNode" }
+      "items": { "$ref": "#/$defs/Workspace" }
     }
   },
   "$defs": {
-    "ProjectNode": {
+    "Workspace": {
       "type": "object",
-      "required": ["name", "path", "buildFiles", "languages"],
+      "required": ["root", "type", "projects"],
+      "properties": {
+        "root": {
+          "type": "string",
+          "description": "Path to the workspace root, relative to the repository root. '.' for the repository root itself."
+        },
+        "type": {
+          "type": "string",
+          "description": "Workspace manager type: pnpm, npm, yarn, bun, or standalone for a single-project repo.",
+          "enum": ["pnpm", "npm", "yarn", "bun", "standalone"]
+        },
+        "projects": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FlatProjectNode" },
+          "description": "All projects in this workspace, flattened. The workspace root is always the first entry."
+        }
+      }
+    },
+    "FlatProjectNode": {
+      "type": "object",
+      "required": ["name", "path", "parent", "children", "producesArtifacts", "buildFiles", "languages"],
       "properties": {
         "name": {
           "type": "string",
@@ -24,6 +48,19 @@
         "path": {
           "type": "string",
           "description": "Path relative to the repository root. '.' for the root project itself."
+        },
+        "parent": {
+          "type": ["string", "null"],
+          "description": "Path of the parent project, relative to the repository root. Null for workspace roots."
+        },
+        "children": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Paths of direct child projects, relative to the repository root."
+        },
+        "producesArtifacts": {
+          "type": "boolean",
+          "description": "Whether this project produces publishable artifacts. False only for private workspace roots with no entry points."
         },
         "buildFiles": {
           "type": "array",
@@ -38,7 +75,7 @@
         },
         "buildTool": {
           "type": "string",
-          "description": "Build tool or package manager (npm, pnpm, yarn, gradle, maven, cargo, pip, etc.).",
+          "description": "Build tool or package manager (npm, pnpm, yarn, bun, etc.).",
           "default": "unknown"
         },
         "config": {
@@ -49,19 +86,7 @@
           "type": "array",
           "items": { "type": "string" },
           "default": [],
-          "description": "Names of sibling or cousin ProjectNodes that this project depends on."
-        },
-        "subProjects": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/ProjectNode" },
-          "default": [],
-          "description": "Child projects (workspace packages, Gradle subprojects, etc.)."
-        },
-        "includedBuilds": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Paths to other project roots included as composite/included builds (Gradle). Absent or empty for tools that don't support this."
+          "description": "Paths of sibling projects (relative to repository root) that this project depends on."
         }
       }
     },
@@ -70,11 +95,11 @@
       "properties": {
         "configFile": {
           "type": "string",
-          "description": "Path to the config file, relative to this ProjectNode's path."
+          "description": "Path to the config file, relative to this FlatProjectNode's path."
         }
       },
       "additionalProperties": true,
-      "description": "Tool-specific configuration. Always has configFile; additional properties vary by tool (e.g. allowJs for TypeScript, sourceCompatibility for Gradle)."
+      "description": "Tool-specific configuration. Always has configFile; additional properties vary by tool (e.g. allowJs for TypeScript)."
     }
   }
 }
