@@ -145,48 +145,38 @@ function indexFiltered(options: MultiProjectOptions): void {
     pathsMapping[pkg.name + '/*'] = [relPath + '/*']
   }
 
-  const rootTsconfigPath = path.join(options.cwd, 'tsconfig.json')
-  const rawCompilerOptions: Record<string, unknown> = {}
-
-  if (ts.sys.fileExists(rootTsconfigPath)) {
-    const readResult = ts.readConfigFile(rootTsconfigPath, p => ts.sys.readFile(p))
-    if (!readResult.error && readResult.config?.compilerOptions) {
-      Object.assign(rawCompilerOptions, readResult.config.compilerOptions)
-    }
-  }
-
   const packageTsconfigPath = path.join(targetPackage.absPath, 'tsconfig.json')
   const packageJsconfigPath = path.join(targetPackage.absPath, 'jsconfig.json')
-
+  let configFile: string | undefined
   if (ts.sys.fileExists(packageTsconfigPath)) {
-    const readResult = ts.readConfigFile(packageTsconfigPath, p => ts.sys.readFile(p))
-    if (!readResult.error && readResult.config?.compilerOptions) {
-      Object.assign(rawCompilerOptions, readResult.config.compilerOptions)
-    }
+    configFile = packageTsconfigPath
   } else if (ts.sys.fileExists(packageJsconfigPath)) {
-    Object.assign(rawCompilerOptions, {
-      allowJs: true,
-      maxNodeModuleJsDepth: 2,
-      allowSyntheticDefaultImports: true,
-    })
+    configFile = packageJsconfigPath
   }
 
-  const existingPaths = (rawCompilerOptions.paths ?? {}) as Record<string, string[]>
-  Object.assign(rawCompilerOptions, {
-    baseUrl: '.',
-    paths: { ...existingPaths, ...pathsMapping },
-    noEmit: true,
-    skipLibCheck: true,
+  if (!configFile) {
+    console.error(
+      `error: no tsconfig.json or jsconfig.json found for package '${options.filter}' at ${targetPackage.absPath}`
+    )
+    process.exitCode = 1
+    return
+  }
+
+  const config = loadConfigFile(configFile, {
+    transformCompilerOptions: (compilerOptions) => {
+      const existingPaths = (compilerOptions.paths ?? {}) as Record<string, string[]>
+      return {
+        ...compilerOptions,
+        baseUrl: '.',
+        paths: { ...existingPaths, ...pathsMapping },
+        noEmit: true,
+        skipLibCheck: true,
+      }
+    },
+    include: ['./**/*'],
   })
 
-  const syntheticConfig = {
-    compilerOptions: rawCompilerOptions,
-    include: ['./**/*'],
-  }
-
-  const config = ts.parseJsonConfigFileContent(syntheticConfig, ts.sys, targetPackage.absPath)
-
-  if (config.fileNames.length === 0) {
+  if (!config || config.fileNames.length === 0) {
     console.error(
       `error: no files found in package '${options.filter}' at ${targetPackage.absPath}`
     )
@@ -306,17 +296,30 @@ if (require.main === module) {
   main()
 }
 
-function loadConfigFile(file: string): ts.ParsedCommandLine | undefined {
+interface LoadConfigOptions {
+  transformCompilerOptions?: (options: Record<string, unknown>) => Record<string, unknown>
+  include?: string[]
+}
+
+function loadConfigFile(
+  file: string,
+  loadOptions?: LoadConfigOptions
+): ts.ParsedCommandLine | undefined {
   const absolute = path.resolve(file)
 
-  const readResult = ts.readConfigFile(absolute, path => ts.sys.readFile(path))
+  const readResult = ts.readConfigFile(absolute, p => ts.sys.readFile(p))
 
   if (readResult.error) {
     throw new Error(
       ts.formatDiagnostics([readResult.error], ts.createCompilerHost({}))
     )
   }
-  const config = readResult.config
+  const config = readResult.config as {
+    extends?: string
+    compilerOptions?: Record<string, unknown>
+    include?: string[]
+    exclude?: string[]
+  }
   if (config.extends) {
     const extendsPath = path.resolve(path.dirname(absolute), config.extends)
     if (!ts.sys.fileExists(extendsPath)) {
@@ -324,27 +327,30 @@ function loadConfigFile(file: string): ts.ParsedCommandLine | undefined {
       delete config.extends
     }
   }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-  if (config.compilerOptions !== undefined) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-    config.compilerOptions = {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      ...config.compilerOptions,
-      ...defaultCompilerOptions(file),
-    }
+
+  const baseOptions: Record<string, unknown> = { ...(config.compilerOptions ?? {}) }
+  delete baseOptions.outDir
+  delete baseOptions.outFile
+
+  config.compilerOptions = {
+    ...baseOptions,
+    ...defaultCompilerOptions(file),
   }
+
+  if (loadOptions?.transformCompilerOptions) {
+    config.compilerOptions = loadOptions.transformCompilerOptions(config.compilerOptions)
+  }
+
+  if (loadOptions?.include) {
+    config.include = loadOptions.include
+    delete config.exclude
+  }
+
   const basePath = path.dirname(absolute)
   const result = ts.parseJsonConfigFileContent(config, ts.sys, basePath)
   const errors: ts.Diagnostic[] = []
   for (const error of result.errors) {
     if (error.code === 18003) {
-      // Ignore errors about missing 'input' fields, example:
-      // > TS18003: No inputs were found in config file 'tsconfig.json'. Specified 'include' paths were '[]' and 'exclude' paths were '["out","node_modules","dist"]'.
-      // The reason we ignore this error here is because we report the same
-      // error at a higher-level.  It's common to hit on a single TypeScript
-      // project with no sources when using the --yarnWorkspaces option.
-      // Instead of failing fast at that single project, we only report this
-      // error if all projects have no files.
       continue
     }
     errors.push(error)
