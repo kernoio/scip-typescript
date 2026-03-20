@@ -179,13 +179,8 @@ function flattenTree(
   const result: FlatProjectNode[] = []
   const childPaths = node.children.map(c => c.relPath)
 
-  const dependencyPaths = node.dependencyNames
-    .map(name => {
-      const depDir = nameToDir.get(name)
-      if (!depDir) return undefined
-      return path.relative(rootDir, depDir) || '.'
-    })
-    .filter((p): p is string => p !== undefined)
+  const resolvedDependencies = node.dependencyNames
+    .filter(name => nameToDir.has(name))
     .sort()
 
   const flat: FlatProjectNode = {
@@ -206,8 +201,8 @@ function flattenTree(
     flat.config = node.config
   }
 
-  if (dependencyPaths.length > 0) {
-    flat.dependencies = dependencyPaths
+  if (resolvedDependencies.length > 0) {
+    flat.dependencies = resolvedDependencies
   }
 
   result.push(flat)
