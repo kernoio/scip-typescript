@@ -8,7 +8,6 @@ import * as scip from './scip'
 
 /** Configuration options to index a multi-project workspace. */
 export interface MultiProjectOptions {
-  inferTsconfig: boolean
   progressBar: boolean
   yarnWorkspaces: boolean
   yarnBerryWorkspaces: boolean
@@ -57,11 +56,6 @@ export function mainCommand(
     .option(
       '--yarn-berry-workspaces',
       '(deprecated) use --yarn-workspaces instead',
-      false
-    )
-    .option(
-      '--infer-tsconfig',
-      "whether to infer the tsconfig.json file, if it's missing",
       false
     )
     .option('--output <path>', 'path to the output file', 'index.scip')

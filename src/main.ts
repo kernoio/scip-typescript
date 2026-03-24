@@ -155,11 +155,20 @@ function indexFiltered(options: MultiProjectOptions): void {
   }
 
   if (!configFile) {
-    console.error(
-      `error: no tsconfig.json or jsconfig.json found for package '${options.filter}' at ${targetPackage.absPath}`
-    )
-    process.exitCode = 1
-    return
+    const parentDir = path.dirname(targetPackage.absPath)
+    const ancestorTsconfig = ts.findConfigFile(parentDir, ts.sys.fileExists, 'tsconfig.json')
+    const ancestorJsconfig = ancestorTsconfig
+      ? undefined
+      : ts.findConfigFile(parentDir, ts.sys.fileExists, 'jsconfig.json')
+    const ancestorConfig = ancestorTsconfig || ancestorJsconfig
+
+    if (ancestorConfig) {
+      const relativePath = path.relative(targetPackage.absPath, ancestorConfig)
+      fs.writeFileSync(packageTsconfigPath, JSON.stringify({ extends: relativePath }))
+    } else {
+      fs.writeFileSync(packageTsconfigPath, inferTsconfig())
+    }
+    configFile = packageTsconfigPath
   }
 
   const config = loadConfigFile(configFile, {
@@ -263,12 +272,7 @@ function indexSingleProject(options: ProjectOptions, cache: GlobalCache): void {
       tsconfigFileName = projectPath
     }
     if (!ts.sys.fileExists(tsconfigFileName)) {
-      if (options.inferTsconfig) {
-        fs.writeFileSync(tsconfigFileName, inferTsconfig(projectPath))
-      } else {
-        console.error(`- ${options.projectDisplayName} (missing tsconfig.json)`)
-        return
-      }
+      fs.writeFileSync(tsconfigFileName, inferTsconfig())
     }
     const loadedConfig = loadConfigFile(tsconfigFileName)
     if (loadedConfig !== undefined) {

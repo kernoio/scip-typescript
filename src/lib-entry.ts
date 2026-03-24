@@ -68,7 +68,6 @@ export function indexProject(
         yarnWorkspaces: false,
         yarnBerryWorkspaces: false,
         pnpmWorkspaces: false,
-        inferTsconfig: false,
         indexedProjects: new Set<string>(),
       }
 

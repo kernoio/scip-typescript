@@ -49,11 +49,10 @@ for (const snapshotDirectory of snapshotDirectories) {
       fs.readFileSync(packageJsonPath).toString()
     ) as PackageJson
     const tsconfigJsonPath = path.join(inputRoot, 'tsconfig.json')
-    const inferTsconfig = !fs.existsSync(tsconfigJsonPath)
+    const hadTsconfig = fs.existsSync(tsconfigJsonPath)
     const output = path.join(inputRoot, 'index.scip')
     indexCommand([], {
       cwd: inputRoot,
-      inferTsconfig,
       output,
       yarnWorkspaces: Boolean(packageJson.workspaces),
       yarnBerryWorkspaces: false,
@@ -62,7 +61,7 @@ for (const snapshotDirectory of snapshotDirectories) {
       indexedProjects: new Set(),
       globalCaches: true,
     })
-    if (inferTsconfig) {
+    if (!hadTsconfig) {
       fs.rmSync(tsconfigJsonPath)
     }
     const index = scip.scip.Index.deserializeBinary(
