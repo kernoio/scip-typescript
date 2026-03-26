@@ -26,7 +26,6 @@ export class FileIndexer {
   private propertyCounters: Map<string, Counter> = new Map()
   private localSymbolTable: Map<ts.Node, ScipSymbol> = new Map()
   private workingDirectoryRegExp: RegExp
-  private constructedExternalSymbols: Set<string> = new Set()
   constructor(
     public readonly checker: ts.TypeChecker,
     public readonly program: ts.Program,
@@ -104,22 +103,12 @@ export class FileIndexer {
     return false
   }
 
-  private isExternalFile(node: ts.Node): boolean {
-    const sourceFile = node.getSourceFile()
-    if (!sourceFile) {
-      return false
-    }
-    if (!this.projectFileNames.has(sourceFile.fileName)) {
-      return true
-    }
-    let current: ts.Node = node.parent
-    while (current && !ts.isSourceFile(current)) {
-      if (ts.isModuleDeclaration(current) && ts.isStringLiteral(current.name)) {
-        return true
-      }
-      current = current.parent
-    }
-    return false
+  private isExternalImport(node: ts.Node): boolean {
+    const moduleSpec = this.getImportModuleSpecifier(node)
+    if (!moduleSpec || moduleSpec.startsWith('.') || moduleSpec.startsWith('/')) return false
+    const resolved = ts.resolveModuleName(moduleSpec, this.sourceFile.fileName, this.program.getCompilerOptions(), ts.sys)
+    if (!resolved.resolvedModule) return true
+    return !this.projectFileNames.has(resolved.resolvedModule.resolvedFileName)
   }
 
   private getImportModuleSpecifier(node: ts.Node): string | undefined {
@@ -300,12 +289,8 @@ export class FileIndexer {
         continue
       }
       let occurrenceRole = role
-      if (this.isImportSiteNode(node)) {
-        if (this.isExternalFile(declaration)) {
-          occurrenceRole |= scip.scip.SymbolRole.External
-        } else if (this.constructedExternalSymbols.has(scipSymbol.value)) {
-          occurrenceRole |= scip.scip.SymbolRole.External
-        }
+      if (this.isImportSiteNode(node) && this.isExternalImport(node)) {
+        occurrenceRole |= scip.scip.SymbolRole.External
       }
       this.pushOccurrence(
         new scip.scip.Occurrence({
@@ -585,7 +570,6 @@ export class FileIndexer {
           const symbol = name
             ? ScipSymbol.global(moduleSymbol, termDescriptor(name))
             : moduleSymbol
-          this.constructedExternalSymbols.add(symbol.value)
           return this.cached(node, symbol)
         }
       }
