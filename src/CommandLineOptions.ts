@@ -26,6 +26,7 @@ export interface ProjectOptions extends MultiProjectOptions {
   projectRoot: string
   projectDisplayName: string
   writeIndex: (index: scip.scip.Index) => void
+  workspacePackageNames?: Set<string>
 }
 
 /** Cached values */

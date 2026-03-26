@@ -118,6 +118,8 @@ function indexFiltered(options: MultiProjectOptions): void {
     collectPackages(workspace.projects)
   }
 
+  const workspacePackageNames = new Set(allPackages.map(p => p.name))
+
   if (!targetPackage) {
     console.error(
       `error: package '${options.filter}' not found in workspace. Available packages: ${allPackages.map(p => p.name).join(', ')}`
@@ -231,6 +233,7 @@ function indexFiltered(options: MultiProjectOptions): void {
         projectRoot: targetPackage.absPath,
         projectDisplayName: options.filter!,
         writeIndex,
+        workspacePackageNames,
       } as ProjectOptions,
       cache
     ).index()

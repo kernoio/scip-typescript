@@ -26,7 +26,7 @@ export class FileIndexer {
   private propertyCounters: Map<string, Counter> = new Map()
   private localSymbolTable: Map<ts.Node, ScipSymbol> = new Map()
   private workingDirectoryRegExp: RegExp
-  private emittedExternalRoots: Set<string> = new Set()
+  private constructedExternalSymbols: Set<string> = new Set()
   constructor(
     public readonly checker: ts.TypeChecker,
     public readonly program: ts.Program,
@@ -37,7 +37,8 @@ export class FileIndexer {
     public readonly globalConstructorTable: Map<ts.ClassDeclaration, boolean>,
     public readonly packages: Packages,
     public readonly sourceFile: ts.SourceFile,
-    public readonly projectFileNames: Set<string>
+    public readonly projectFileNames: Set<string>,
+    public readonly workspacePackageNames: Set<string> = new Set()
   ) {
     this.workingDirectoryRegExp = new RegExp(options.cwd, 'g')
   }
@@ -105,9 +106,20 @@ export class FileIndexer {
 
   private isExternalFile(node: ts.Node): boolean {
     const sourceFile = node.getSourceFile()
-    if (!sourceFile) return false
-    return this.program.isSourceFileFromExternalLibrary(sourceFile) ||
-      this.program.isSourceFileDefaultLibrary(sourceFile)
+    if (!sourceFile) {
+      return false
+    }
+    if (!this.projectFileNames.has(sourceFile.fileName)) {
+      return true
+    }
+    let current: ts.Node = node.parent
+    while (current && !ts.isSourceFile(current)) {
+      if (ts.isModuleDeclaration(current) && ts.isStringLiteral(current.name)) {
+        return true
+      }
+      current = current.parent
+    }
+    return false
   }
 
   private getImportModuleSpecifier(node: ts.Node): string | undefined {
@@ -124,18 +136,17 @@ export class FileIndexer {
     return undefined
   }
 
-  private emitExternalModuleRoot(declaration: ts.Node): void {
-    const sourceFile = declaration.getSourceFile()
-    if (!sourceFile) return
-    const moduleSymbol = this.packages.symbol(sourceFile.fileName)
-    if (moduleSymbol.isEmpty() || moduleSymbol.isLocal()) return
-    if (this.emittedExternalRoots.has(moduleSymbol.value)) return
-    this.emittedExternalRoots.add(moduleSymbol.value)
-    this.document.symbols.push(
-      new scip.scip.SymbolInformation({
-        symbol: moduleSymbol.value,
-      })
-    )
+  private importedName(node: ts.Node): string | undefined {
+    if (ts.isImportClause(node) && node.name) {
+      return node.name.getText()
+    }
+    if (ts.isImportSpecifier(node)) {
+      return (node.propertyName || node.name).getText()
+    }
+    if (ts.isNamespaceImport(node)) {
+      return node.name.getText()
+    }
+    return undefined
   }
 
   private visit(node: ts.Node): void {
@@ -292,12 +303,8 @@ export class FileIndexer {
       if (this.isImportSiteNode(node)) {
         if (this.isExternalFile(declaration)) {
           occurrenceRole |= scip.scip.SymbolRole.External
-          this.emitExternalModuleRoot(declaration)
-        } else if (scipSymbol.isLocal()) {
-          const moduleSpec = this.getImportModuleSpecifier(node)
-          if (moduleSpec && !moduleSpec.startsWith('.') && !moduleSpec.startsWith('/')) {
-            occurrenceRole |= scip.scip.SymbolRole.External
-          }
+        } else if (this.constructedExternalSymbols.has(scipSymbol.value)) {
+          occurrenceRole |= scip.scip.SymbolRole.External
         }
       }
       this.pushOccurrence(
@@ -496,6 +503,9 @@ export class FileIndexer {
       }
       return this.cached(node, package_)
     }
+    if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
+      return this.cached(node, ScipSymbol.package(node.name.text, 'HEAD'))
+    }
     if (
       ts.isPropertyAssignment(node) ||
       ts.isShorthandPropertyAssignment(node)
@@ -563,6 +573,21 @@ export class FileIndexer {
       const tpe = this.checker.getTypeAtLocation(node)
       for (const declaration of tpe.symbol?.declarations || []) {
         return this.scipSymbol(declaration)
+      }
+      const moduleSpec = this.getImportModuleSpecifier(node)
+      if (moduleSpec && !moduleSpec.startsWith('.') && !moduleSpec.startsWith('/')) {
+        const pkgName = moduleSpec.startsWith('@')
+          ? moduleSpec.split('/').slice(0, 2).join('/')
+          : moduleSpec.split('/')[0]
+        if (!this.workspacePackageNames.has(pkgName)) {
+          const moduleSymbol = ScipSymbol.package(moduleSpec, 'HEAD')
+          const name = this.importedName(node)
+          const symbol = name
+            ? ScipSymbol.global(moduleSymbol, termDescriptor(name))
+            : moduleSymbol
+          this.constructedExternalSymbols.add(symbol.value)
+          return this.cached(node, symbol)
+        }
       }
     }
 

@@ -1,5 +1,5 @@
-// < definition syntax 1.0.0 src/`function.ts`/
+// < definition syntax src/`function.ts`/
 
 export function newFunction(): void {}
-//              ^^^^^^^^^^^ definition syntax 1.0.0 src/`function.ts`/newFunction().
+//              ^^^^^^^^^^^ definition syntax src/`function.ts`/newFunction().
 

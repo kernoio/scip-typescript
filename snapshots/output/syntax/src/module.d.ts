@@ -1,8 +1,8 @@
-// < definition syntax 1.0.0 src/`module.d.ts`/
+// < definition syntax src/`module.d.ts`/
 
 declare module 'a:b' {
-//             ^^^^^ definition syntax 1.0.0 src/`module.d.ts`/`'a:b'`/
+//             ^^^^^ definition a:b 
   function hello(): string
-//         ^^^^^ definition syntax 1.0.0 src/`module.d.ts`/`'a:b'`/hello().
+//         ^^^^^ definition a:b hello().
 }
 

@@ -233,9 +233,14 @@ export function formatSnapshot(
       if (range.start.character === 0 && range.end.character === 0) {
         const isDefinition =
           (occurrence.symbol_roles & scip.SymbolRole.Definition) > 0
+        const isExternal =
+          (occurrence.symbol_roles & scip.SymbolRole.External) > 0
         out.push(commentSyntax)
         out.push(' < ')
         out.push(isDefinition ? 'definition' : 'reference')
+        if (isExternal) {
+          out.push(' external')
+        }
         out.push(' ')
         out.push(symbolNameForSnapshot(occurrence.symbol))
         pushDoc(range, occurrence.symbol, isDefinition, true)
@@ -289,7 +294,12 @@ export function formatSnapshot(
       out.push(' ')
       const isDefinition =
         (occurrence.symbol_roles & scip.SymbolRole.Definition) > 0
+      const isExternal =
+        (occurrence.symbol_roles & scip.SymbolRole.External) > 0
       out.push(isDefinition ? 'definition' : 'reference')
+      if (isExternal) {
+        out.push(' external')
+      }
       out.push(' ')
       const symbol = symbolNameForSnapshot(occurrence.symbol)
       out.push(symbol.replace('\n', '|'))

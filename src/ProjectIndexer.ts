@@ -146,7 +146,8 @@ export class ProjectIndexer {
         this.hasConstructor,
         this.packages,
         sourceFile,
-        projectFileNames
+        projectFileNames,
+        this.options.workspacePackageNames ?? new Set()
       )
       try {
         visitor.index()
