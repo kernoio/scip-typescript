@@ -21,7 +21,8 @@ export namespace scip {
         ReadAccess = 8,
         Generated = 16,
         Test = 32,
-        ForwardDefinition = 64
+        ForwardDefinition = 64,
+        External = 128
     }
     export enum SyntaxKind {
         UnspecifiedSyntaxKind = 0,

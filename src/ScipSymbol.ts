@@ -20,8 +20,8 @@ export class ScipSymbol {
     return new ScipSymbol('')
   }
 
-  public static package(name: string, version: string): ScipSymbol {
-    return new ScipSymbol(`scip-typescript npm ${name} ${version} `)
+  public static package(name: string, _version: string): ScipSymbol {
+    return new ScipSymbol(`${name} `)
   }
 
   public static anonymousPackage(): ScipSymbol {

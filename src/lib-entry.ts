@@ -73,13 +73,15 @@ export function indexProject(
 
       const visitor = new FileIndexer(
         checker,
+        program,
         options,
         input,
         document,
         symbolCache,
         constructorTable,
         packages,
-        sourceFile
+        sourceFile,
+        new Set(fileNames)
       )
 
       try {

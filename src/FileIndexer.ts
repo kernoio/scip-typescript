@@ -26,15 +26,18 @@ export class FileIndexer {
   private propertyCounters: Map<string, Counter> = new Map()
   private localSymbolTable: Map<ts.Node, ScipSymbol> = new Map()
   private workingDirectoryRegExp: RegExp
+  private emittedExternalRoots: Set<string> = new Set()
   constructor(
     public readonly checker: ts.TypeChecker,
+    public readonly program: ts.Program,
     public readonly options: ProjectOptions,
     public readonly input: Input,
     public readonly document: scip.scip.Document,
     public readonly globalSymbolTable: Map<ts.Node, ScipSymbol>,
     public readonly globalConstructorTable: Map<ts.ClassDeclaration, boolean>,
     public readonly packages: Packages,
-    public readonly sourceFile: ts.SourceFile
+    public readonly sourceFile: ts.SourceFile,
+    public readonly projectFileNames: Set<string>
   ) {
     this.workingDirectoryRegExp = new RegExp(options.cwd, 'g')
   }
@@ -85,6 +88,56 @@ export class FileIndexer {
       })
     )
   }
+  private isImportSiteNode(node: ts.Node): boolean {
+    if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) {
+      const parent = node.parent
+      return (
+        ts.isImportSpecifier(parent) ||
+        (ts.isImportClause(parent) && parent.name === node) ||
+        ts.isNamespaceImport(parent)
+      )
+    }
+    if (ts.isStringLiteralLike(node)) {
+      return ts.isImportDeclaration(node.parent)
+    }
+    return false
+  }
+
+  private isExternalFile(node: ts.Node): boolean {
+    const sourceFile = node.getSourceFile()
+    if (!sourceFile) return false
+    return this.program.isSourceFileFromExternalLibrary(sourceFile) ||
+      this.program.isSourceFileDefaultLibrary(sourceFile)
+  }
+
+  private getImportModuleSpecifier(node: ts.Node): string | undefined {
+    if (ts.isStringLiteralLike(node) && ts.isImportDeclaration(node.parent)) {
+      return node.text
+    }
+    let current: ts.Node = node.parent
+    while (current && !ts.isImportDeclaration(current) && !ts.isSourceFile(current)) {
+      current = current.parent
+    }
+    if (current && ts.isImportDeclaration(current) && ts.isStringLiteral(current.moduleSpecifier)) {
+      return (current.moduleSpecifier as ts.StringLiteral).text
+    }
+    return undefined
+  }
+
+  private emitExternalModuleRoot(declaration: ts.Node): void {
+    const sourceFile = declaration.getSourceFile()
+    if (!sourceFile) return
+    const moduleSymbol = this.packages.symbol(sourceFile.fileName)
+    if (moduleSymbol.isEmpty() || moduleSymbol.isLocal()) return
+    if (this.emittedExternalRoots.has(moduleSymbol.value)) return
+    this.emittedExternalRoots.add(moduleSymbol.value)
+    this.document.symbols.push(
+      new scip.scip.SymbolInformation({
+        symbol: moduleSymbol.value,
+      })
+    )
+  }
+
   private visit(node: ts.Node): void {
     if (
       ts.isConstructorDeclaration(node) ||
@@ -233,16 +286,26 @@ export class FileIndexer {
       }
 
       if (scipSymbol.isEmpty()) {
-        // Skip empty symbols
         continue
+      }
+      let occurrenceRole = role
+      if (this.isImportSiteNode(node)) {
+        if (this.isExternalFile(declaration)) {
+          occurrenceRole |= scip.scip.SymbolRole.External
+          this.emitExternalModuleRoot(declaration)
+        } else if (scipSymbol.isLocal()) {
+          const moduleSpec = this.getImportModuleSpecifier(node)
+          if (moduleSpec && !moduleSpec.startsWith('.') && !moduleSpec.startsWith('/')) {
+            occurrenceRole |= scip.scip.SymbolRole.External
+          }
+        }
       }
       this.pushOccurrence(
         new scip.scip.Occurrence({
           enclosing_range: enclosingRange,
           range,
           symbol: scipSymbol.value,
-          symbol_roles: role,
-
+          symbol_roles: occurrenceRole,
           diagnostics: FileIndexer.diagnosticsFor(sym, isDefinitionNode),
         })
       )

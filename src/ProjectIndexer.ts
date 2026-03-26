@@ -103,6 +103,8 @@ export class ProjectIndexer {
       )
     }
 
+    const projectFileNames = new Set(this.config.fileNames)
+
     const jobs: ProgressBar | undefined = this.options.progressBar
       ? new ProgressBar(
           `  ${this.options.projectDisplayName} [:bar] :current/:total :title`,
@@ -136,13 +138,15 @@ export class ProjectIndexer {
       const input = new Input(sourceFile.fileName, sourceFile.getText())
       const visitor = new FileIndexer(
         this.checker,
+        this.program,
         this.options,
         input,
         document,
         this.symbolCache,
         this.hasConstructor,
         this.packages,
-        sourceFile
+        sourceFile,
+        projectFileNames
       )
       try {
         visitor.index()
