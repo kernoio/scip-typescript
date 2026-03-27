@@ -12,8 +12,6 @@
     "eslint": "eslint --cache '**/*.ts?(x)'",
     "build": "node ./node_modules/typescript/bin/tsc -b .",
     "test": "uvu -r tsm --ignore dist",
-    "update-snapshots": "uvu -r tsm --ignore dist --update-snapshots",
-    "prepare": "cd snapshots && yarn && cd input/multi-project && yarn && cd ../pnpm-workspaces && pnpm install",
     "bundle": "esbuild src/main.ts --bundle --minify --platform=node --format=cjs --outfile=dist/scip-typescript.cjs"
   },
   "repository": {
