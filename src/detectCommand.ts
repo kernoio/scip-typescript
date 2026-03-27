@@ -129,6 +129,22 @@ export function detect(cwd: string): DetectOutput {
     }
   }
 
+  const allNodes: TreeNode[] = []
+  for (const rootNode of rootTreeNodes) {
+    collectAllNodes(rootNode, allNodes)
+  }
+  const allDirs = allNodes.map(n => n.dir)
+  for (const node of allNodes) {
+    const physicalDescendantDirs = new Set(
+      allDirs.filter(d => d !== node.dir && d.startsWith(node.dir + path.sep))
+    )
+    const tsCount = { value: 0 }
+    const jsCount = { value: 0 }
+    countFiles(node.dir, tsCount, jsCount, physicalDescendantDirs)
+    if (tsCount.value > 0) node.languages.push('typescript')
+    if (jsCount.value > 0) node.languages.push('javascript')
+  }
+
   const workspaces: Workspace[] = rootTreeNodes.map(rootNode => {
     const rootPkg = rootNode.pkg
     const workspaceType = deriveWorkspaceType(rootNode.dir, rootNode.buildTool, rootPkg)
@@ -226,17 +242,6 @@ function buildTreeNode(
   const name = (pkg?.['name'] as string | undefined) ?? path.basename(dir)
   const relPath = path.relative(rootDir, dir) || '.'
 
-  const tsCount = { value: 0 }
-  const jsCount = { value: 0 }
-  countFiles(dir, tsCount, jsCount)
-  const languages: string[] = []
-  if (tsCount.value > 0) {
-    languages.push('typescript')
-  }
-  if (jsCount.value > 0) {
-    languages.push('javascript')
-  }
-
   const buildTool = detectBuildTool(dir, rootDir, parentBuildTool)
   const config = detectConfig(dir)
   const buildFiles = collectBuildFiles(dir, buildTool, config)
@@ -267,7 +272,14 @@ function buildTreeNode(
     children.push(childNode)
   }
 
-  return { name, dir, relPath, buildFiles, languages, buildTool, config, dependencyNames, children, pkg }
+  return { name, dir, relPath, buildFiles, languages: [], buildTool, config, dependencyNames, children, pkg }
+}
+
+function collectAllNodes(node: TreeNode, result: TreeNode[]): void {
+  result.push(node)
+  for (const child of node.children) {
+    collectAllNodes(child, result)
+  }
 }
 
 function walkForPackageJsonDirs(rootDir: string): string[] {
@@ -677,7 +689,8 @@ function extractPackageName(specifier: string): string | undefined {
 function countFiles(
   dir: string,
   tsCount: { value: number },
-  jsCount: { value: number }
+  jsCount: { value: number },
+  excludeDirs?: Set<string>
 ): void {
   let entries: fs.Dirent[]
   try {
@@ -688,8 +701,9 @@ function countFiles(
 
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name) && !TEST_PATTERNS.has(entry.name)) {
-        countFiles(path.join(dir, entry.name), tsCount, jsCount)
+      const childDir = path.join(dir, entry.name)
+      if (!SKIP_DIRS.has(entry.name) && !TEST_PATTERNS.has(entry.name) && !(excludeDirs?.has(childDir))) {
+        countFiles(childDir, tsCount, jsCount, excludeDirs)
       }
     } else if (entry.isFile()) {
       const name = entry.name

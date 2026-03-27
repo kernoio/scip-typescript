@@ -103,8 +103,6 @@ export class ProjectIndexer {
       )
     }
 
-    const projectFileNames = new Set(this.config.fileNames)
-
     const jobs: ProgressBar | undefined = this.options.progressBar
       ? new ProgressBar(
           `  ${this.options.projectDisplayName} [:bar] :current/:total :title`,
@@ -146,7 +144,6 @@ export class ProjectIndexer {
         this.hasConstructor,
         this.packages,
         sourceFile,
-        projectFileNames,
         this.options.workspacePackageNames ?? new Set()
       )
       try {

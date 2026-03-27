@@ -36,7 +36,6 @@ export class FileIndexer {
     public readonly globalConstructorTable: Map<ts.ClassDeclaration, boolean>,
     public readonly packages: Packages,
     public readonly sourceFile: ts.SourceFile,
-    public readonly projectFileNames: Set<string>,
     public readonly workspacePackageNames: Set<string> = new Set()
   ) {
     this.workingDirectoryRegExp = new RegExp(options.cwd, 'g')
@@ -103,12 +102,19 @@ export class FileIndexer {
     return false
   }
 
-  private isExternalImport(node: ts.Node): boolean {
+  private isExternalImport(node: ts.Node, sym: ts.Symbol): boolean {
     const moduleSpec = this.getImportModuleSpecifier(node)
-    if (!moduleSpec || moduleSpec.startsWith('.') || moduleSpec.startsWith('/')) return false
-    const resolved = ts.resolveModuleName(moduleSpec, this.sourceFile.fileName, this.program.getCompilerOptions(), ts.sys)
-    if (!resolved.resolvedModule) return true
-    return !this.projectFileNames.has(resolved.resolvedModule.resolvedFileName)
+    if (!moduleSpec || moduleSpec.startsWith('.') || moduleSpec.startsWith('/')) {
+      return false
+    }
+    const declarations = sym.getDeclarations()
+    if (!declarations || declarations.length === 0) {
+      return true
+    }
+    const resolvedFile = declarations[0].getSourceFile().fileName
+    const isLocal = resolvedFile === this.sourceFile.fileName
+    const isExternal = isLocal || resolvedFile.includes('/node_modules/')
+    return isExternal
   }
 
   private getImportModuleSpecifier(node: ts.Node): string | undefined {
@@ -289,8 +295,12 @@ export class FileIndexer {
         continue
       }
       let occurrenceRole = role
-      if (this.isImportSiteNode(node) && this.isExternalImport(node)) {
-        occurrenceRole |= scip.scip.SymbolRole.External
+      const isImportSite = this.isImportSiteNode(node)
+      if (isImportSite) {
+        const isExternal = this.isExternalImport(node, sym)
+        if (isExternal) {
+          occurrenceRole |= scip.scip.SymbolRole.External
+        }
       }
       this.pushOccurrence(
         new scip.scip.Occurrence({

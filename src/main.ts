@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-import * as child_process from 'child_process'
 import * as fs from 'fs'
-import { EOL } from 'os'
 import * as path from 'path'
 import * as url from 'url'
 
@@ -15,8 +13,7 @@ import {
   MultiProjectOptions,
   ProjectOptions,
 } from './CommandLineOptions'
-import { detect, detectCommand, FlatProjectNode, resolveEntryPoint } from './detectCommand'
-import { inferTsconfig } from './inferTsconfig'
+import { detect, detectCommand, FlatProjectNode } from './detectCommand'
 import { ProjectIndexer } from './ProjectIndexer'
 import * as scip from './scip'
 
@@ -29,71 +26,10 @@ export function main(): void {
 }
 
 export function indexCommand(
-  projects: string[],
+  _projects: string[],
   options: MultiProjectOptions
 ): void {
-  if (options.filter) {
-    indexFiltered(options)
-    return
-  }
-  if (options.yarnWorkspaces) {
-    projects.push(...listYarnWorkspaces(options.cwd, 'tryYarn1'))
-  } else if (options.yarnBerryWorkspaces) {
-    projects.push(...listYarnWorkspaces(options.cwd, 'yarn2Plus'))
-  } else if (options.pnpmWorkspaces) {
-    projects.push(...listPnpmWorkspaces(options.cwd))
-  } else if (projects.length === 0) {
-    projects.push(options.cwd)
-  }
-  options.cwd = makeAbsolutePath(process.cwd(), options.cwd)
-  options.output = makeAbsolutePath(options.cwd, options.output)
-  if (!options.indexedProjects) {
-    options.indexedProjects = new Set()
-  }
-  const output = fs.openSync(options.output, 'w')
-  let documentCount = 0
-  const writeIndex = (index: scip.scip.Index): void => {
-    documentCount += index.documents.length
-    fs.writeSync(output, index.serializeBinary())
-  }
-
-  const cache: GlobalCache = {
-    sources: new Map(),
-    parsedCommandLines: new Map(),
-  }
-  try {
-    writeIndex(
-      new scip.scip.Index({
-        metadata: new scip.scip.Metadata({
-          project_root: url.pathToFileURL(options.cwd).toString(),
-          text_document_encoding: scip.scip.TextEncoding.UTF8,
-          tool_info: new scip.scip.ToolInfo({
-            name: 'scip-typescript',
-            version: packageJson.version,
-            arguments: [],
-          }),
-        }),
-      })
-    )
-    // NOTE: we may want index these projects in parallel in the future.
-    // We need to be careful about which order we index the projects because
-    // they can have dependencies.
-    for (const projectRoot of projects) {
-      const projectDisplayName = projectRoot === '.' ? options.cwd : projectRoot
-      indexSingleProject(
-        {
-          ...options,
-          projectRoot,
-          projectDisplayName,
-          writeIndex,
-        },
-        cache
-      )
-    }
-  } finally {
-    fs.close(output)
-    console.log(`done ${options.output}`)
-  }
+  indexFiltered(options)
 }
 
 function indexFiltered(options: MultiProjectOptions): void {
@@ -102,15 +38,15 @@ function indexFiltered(options: MultiProjectOptions): void {
 
   const topology = detect(options.cwd)
 
-  const allPackages: Array<{ name: string; absPath: string }> = []
-  let targetPackage: { name: string; absPath: string } | undefined
+  const allPackages: Array<{ name: string; absPath: string; dependencies?: string[] }> = []
+  let targetPackage: { name: string; absPath: string; dependencies?: string[] } | undefined
 
   function collectPackages(nodes: FlatProjectNode[]): void {
     for (const node of nodes) {
       const absPath = path.resolve(options.cwd, node.path)
-      allPackages.push({ name: node.name, absPath })
+      allPackages.push({ name: node.name, absPath, dependencies: node.dependencies })
       if (node.name === options.filter) {
-        targetPackage = { name: node.name, absPath }
+        targetPackage = { name: node.name, absPath, dependencies: node.dependencies }
       }
     }
   }
@@ -128,23 +64,38 @@ function indexFiltered(options: MultiProjectOptions): void {
     return
   }
 
-  const pathsMapping: Record<string, string[]> = {}
-  for (const pkg of allPackages) {
-    if (pkg.name === options.filter) {
-      continue
+  const descendantPaths = allPackages
+    .filter(p => p.absPath !== targetPackage!.absPath &&
+                 p.absPath.startsWith(targetPackage!.absPath + path.sep))
+    .map(p => './' + path.relative(targetPackage!.absPath, p.absPath))
+
+  const allPackagesByName = new Map(allPackages.map(p => [p.name, p]))
+
+  const workspaceDepsToLink = new Set<string>()
+  const queue = [...(targetPackage.dependencies ?? [])]
+  while (queue.length > 0) {
+    const depName = queue.pop()!
+    if (workspaceDepsToLink.has(depName)) continue
+    const dep = allPackagesByName.get(depName)
+    if (!dep) continue
+    workspaceDepsToLink.add(depName)
+    for (const transitive of dep.dependencies ?? []) {
+      queue.push(transitive)
     }
-    const relPath = './' + path.relative(targetPackage.absPath, pkg.absPath)
-    const pkgJsonPath = path.join(pkg.absPath, 'package.json')
-    const pkgJson = fs.existsSync(pkgJsonPath)
-      ? JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8').replace(/^\uFEFF/, ''))
-      : undefined
-    const entryPoint = resolveEntryPoint(pkg.absPath, pkgJson)
-    if (entryPoint) {
-      pathsMapping[pkg.name] = ['./' + path.relative(targetPackage.absPath, entryPoint)]
-    } else {
-      pathsMapping[pkg.name] = [relPath]
+  }
+
+  const createdSymlinks: string[] = []
+  for (const depName of workspaceDepsToLink) {
+    const dep = allPackagesByName.get(depName)!
+    const linkPath = path.join(targetPackage.absPath, 'node_modules', ...depName.split('/'))
+    const linkDir = path.dirname(linkPath)
+    if (!fs.existsSync(linkDir)) {
+      fs.mkdirSync(linkDir, { recursive: true })
     }
-    pathsMapping[pkg.name + '/*'] = [relPath + '/*']
+    if (!fs.existsSync(linkPath)) {
+      fs.symlinkSync(dep.absPath, linkPath, 'dir')
+      createdSymlinks.push(linkPath)
+    }
   }
 
   const packageTsconfigPath = path.join(targetPackage.absPath, 'tsconfig.json')
@@ -167,25 +118,53 @@ function indexFiltered(options: MultiProjectOptions): void {
     if (ancestorConfig) {
       const relativePath = path.relative(targetPackage.absPath, ancestorConfig)
       fs.writeFileSync(packageTsconfigPath, JSON.stringify({ extends: relativePath }))
-    } else {
-      fs.writeFileSync(packageTsconfigPath, inferTsconfig())
+      configFile = packageTsconfigPath
     }
-    configFile = packageTsconfigPath
   }
 
-  const config = loadConfigFile(configFile, {
-    transformCompilerOptions: (compilerOptions) => {
-      const existingPaths = (compilerOptions.paths ?? {}) as Record<string, string[]>
-      return {
-        ...compilerOptions,
-        baseUrl: '.',
-        paths: { ...existingPaths, ...pathsMapping },
-        noEmit: true,
-        skipLibCheck: true,
+  const transformCompilerOptions = (compilerOptions: Record<string, unknown>): Record<string, unknown> => {
+    return {
+      ...compilerOptions,
+      noEmit: true,
+      skipLibCheck: true,
+    }
+  }
+
+  let config: ts.ParsedCommandLine | undefined
+  if (configFile) {
+    config = loadConfigFile(configFile, {
+      transformCompilerOptions,
+      include: ['./**/*'],
+    })
+  } else {
+    const syntheticCompilerOptions = transformCompilerOptions({
+      allowJs: true,
+      ...defaultCompilerOptions(),
+    })
+    const syntheticConfig = {
+      compilerOptions: syntheticCompilerOptions,
+      include: ['./**/*'],
+      exclude: descendantPaths,
+    }
+    const basePath = targetPackage.absPath
+    const parseResult = ts.parseJsonConfigFileContent(syntheticConfig, ts.sys, basePath)
+    const errors: ts.Diagnostic[] = []
+    for (const error of parseResult.errors) {
+      if (error.code === 18003) {
+        continue
       }
-    },
-    include: ['./**/*'],
-  })
+      errors.push(error)
+    }
+    if (errors.length > 0) {
+      console.log(ts.formatDiagnostics(errors, ts.createCompilerHost({})))
+    } else {
+      config = parseResult
+    }
+  }
+
+  if (config) {
+    config.fileNames = config.fileNames.filter(f => !isIndexTestFile(f))
+  }
 
   if (!config || config.fileNames.length === 0) {
     console.error(
@@ -246,6 +225,9 @@ function indexFiltered(options: MultiProjectOptions): void {
       fs.rmSync(options.output)
       console.log(`error: no files got indexed for package '${options.filter}'`)
     }
+    for (const link of createdSymlinks) {
+      try { fs.unlinkSync(link) } catch {}
+    }
   }
 }
 
@@ -254,49 +236,6 @@ function makeAbsolutePath(cwd: string, relativeOrAbsolutePath: string): string {
     return relativeOrAbsolutePath
   }
   return path.resolve(cwd, relativeOrAbsolutePath)
-}
-
-function indexSingleProject(options: ProjectOptions, cache: GlobalCache): void {
-  if (options.indexedProjects.has(options.projectRoot)) {
-    return
-  }
-
-  options.indexedProjects.add(options.projectRoot)
-  let config = ts.parseCommandLine(
-    ['-p', options.projectRoot],
-    (relativePath: string) => path.resolve(options.projectRoot, relativePath)
-  )
-  let tsconfigFileName: string | undefined
-  if (config.options.project) {
-    const projectPath = path.resolve(config.options.project)
-    if (ts.sys.directoryExists(projectPath)) {
-      tsconfigFileName = path.join(projectPath, 'tsconfig.json')
-    } else {
-      tsconfigFileName = projectPath
-    }
-    if (!ts.sys.fileExists(tsconfigFileName)) {
-      fs.writeFileSync(tsconfigFileName, inferTsconfig())
-    }
-    const loadedConfig = loadConfigFile(tsconfigFileName)
-    if (loadedConfig !== undefined) {
-      config = loadedConfig
-    }
-  }
-
-  for (const projectReference of config.projectReferences || []) {
-    indexSingleProject(
-      {
-        ...options,
-        projectRoot: projectReference.path,
-        projectDisplayName: projectReference.path,
-      },
-      cache
-    )
-  }
-
-  if (config.fileNames.length > 0) {
-    new ProjectIndexer(config, options, cache).index()
-  }
 }
 
 if (require.main === module) {
@@ -369,6 +308,15 @@ function loadConfigFile(
   return result
 }
 
+function isIndexTestFile(filePath: string): boolean {
+  const base = path.basename(filePath)
+  if (base.includes('.test.') || base.includes('.spec.') || base.includes('.test-d.')) {
+    return true
+  }
+  const parts = filePath.split(path.sep)
+  return parts.some(p => p === '__tests__' || p === 'test' || p === 'tests' || p === 'fixtures')
+}
+
 function defaultCompilerOptions(configFileName?: string): ts.CompilerOptions {
   const options: ts.CompilerOptions =
     // Not a typo, jsconfig.json is a thing https://sourcegraph.com/search?q=context:global+file:jsconfig.json&patternType=literal
@@ -382,81 +330,4 @@ function defaultCompilerOptions(configFileName?: string): ts.CompilerOptions {
         }
       : {}
   return options
-}
-
-function listPnpmWorkspaces(directory: string): string[] {
-  /**
-   * Returns the list of projects formatted as:
-   * '/Users/user/sourcegraph/client/web:@sourcegraph/web@1.10.1:PRIVATE',
-   *
-   * See https://pnpm.io/id/cli/list#--depth-number
-   */
-  const output = child_process.execSync(
-    'pnpm ls -r --depth -1 --long --parseable',
-    {
-      cwd: directory,
-      encoding: 'utf-8',
-      maxBuffer: 1024 * 1024 * 5, // 5MB
-    }
-  )
-
-  return output
-    .split(EOL)
-    .filter(project => project.includes(':'))
-    .map(project => project.split(':')[0])
-}
-
-function listYarnWorkspaces(
-  directory: string,
-  yarnVersion: 'tryYarn1' | 'yarn2Plus'
-): string[] {
-  const runYarn = (cmd: string): string =>
-    child_process.execSync(cmd, {
-      cwd: directory,
-      encoding: 'utf-8',
-      maxBuffer: 1024 * 1024 * 5, // 5MB
-    })
-  const result: string[] = []
-  const yarn1WorkspaceInfo = (): void => {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const json = JSON.parse(
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      JSON.parse(runYarn('yarn --silent --json workspaces info')).data
-    )
-    for (const key of Object.keys(json)) {
-      const location = 'location'
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      if (json[key][location] !== undefined) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        result.push(path.join(directory, json[key][location]))
-      }
-    }
-  }
-  const yarn2PlusWorkspaceInfo = (): void => {
-    const jsonLines = runYarn('yarn --json workspaces list').split(
-      /\r?\n|\r|\n/g
-    )
-    for (let line of jsonLines) {
-      line = line.trim()
-      if (line.length === 0) {
-        continue
-      }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      const json = JSON.parse(line)
-      if ('location' in json) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        result.push(path.join(directory, json.location))
-      }
-    }
-  }
-  if (yarnVersion === 'tryYarn1') {
-    try {
-      yarn2PlusWorkspaceInfo()
-    } catch {
-      yarn1WorkspaceInfo()
-    }
-  } else {
-    yarn2PlusWorkspaceInfo()
-  }
-  return result
 }
