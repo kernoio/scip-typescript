@@ -47,6 +47,18 @@ interface TreeNode {
   pkg: Record<string, unknown> | undefined
 }
 
+function hasProjectMarker(dir: string): boolean {
+  return fs.existsSync(path.join(dir, 'package.json')) || fs.existsSync(path.join(dir, 'project.json'))
+}
+
+function readNxProjectJson(dir: string): Record<string, unknown> | undefined {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf-8')) as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
 const SKIP_DIRS = new Set([
   'node_modules',
   '.git',
@@ -105,6 +117,21 @@ export function detect(cwd: string): DetectOutput {
       const children = resolveWorkspaceGlobs(dir, globs)
       for (const child of children) {
         claimedDirs.set(child, dir)
+      }
+    }
+  }
+
+  for (const dir of claimedDirs.keys()) {
+    if (!dirToPkg.has(dir)) {
+      const nxProject = readNxProjectJson(dir)
+      if (nxProject) {
+        const syntheticPkg: Record<string, unknown> = {}
+        const nxName = nxProject['name'] as string | undefined
+        if (nxName) syntheticPkg['name'] = nxName
+        dirToPkg.set(dir, syntheticPkg)
+        const name = nxName ?? path.basename(dir)
+        allPackageNames.add(name)
+        nameToDir.set(name, dir)
       }
     }
   }
@@ -296,7 +323,7 @@ function walkDir(dir: string, results: string[]): void {
     return
   }
 
-  if (fs.existsSync(path.join(dir, 'package.json'))) {
+  if (hasProjectMarker(dir)) {
     results.push(dir)
   }
 
@@ -419,7 +446,15 @@ function collectBuildFiles(
   buildTool: string | undefined,
   config: { configFile: string } | undefined
 ): string[] {
-  const files = ['package.json']
+  const files: string[] = []
+
+  if (fs.existsSync(path.join(dir, 'package.json'))) {
+    files.push('package.json')
+  }
+
+  if (fs.existsSync(path.join(dir, 'project.json'))) {
+    files.push('project.json')
+  }
 
   if (config) {
     files.push(config.configFile)
@@ -486,7 +521,7 @@ export function resolveWorkspaceGlobs(rootDir: string, globs: string[]): string[
       }
     } else {
       const candidate = path.join(rootDir, glob)
-      if (fs.existsSync(candidate) && fs.existsSync(path.join(candidate, 'package.json'))) {
+      if (fs.existsSync(candidate) && hasProjectMarker(candidate)) {
         results.push(candidate)
       }
     }
@@ -506,7 +541,7 @@ function collectPackageDirsShallow(parent: string, results: string[]): void {
       continue
     }
     const candidate = path.join(parent, entry.name)
-    if (fs.existsSync(path.join(candidate, 'package.json'))) {
+    if (hasProjectMarker(candidate)) {
       results.push(candidate)
     }
   }
@@ -524,7 +559,7 @@ function collectPackageDirsRecursive(parent: string, results: string[]): void {
       continue
     }
     const candidate = path.join(parent, entry.name)
-    if (fs.existsSync(path.join(candidate, 'package.json'))) {
+    if (hasProjectMarker(candidate)) {
       results.push(candidate)
     }
     collectPackageDirsRecursive(candidate, results)
