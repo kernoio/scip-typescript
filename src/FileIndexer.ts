@@ -90,16 +90,65 @@ export class FileIndexer {
   private isImportSiteNode(node: ts.Node): boolean {
     if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) {
       const parent = node.parent
-      return (
+      if (
         ts.isImportSpecifier(parent) ||
         (ts.isImportClause(parent) && parent.name === node) ||
         ts.isNamespaceImport(parent)
-      )
+      ) {
+        return true
+      }
+      if (this.isRequireBinding(node)) {
+        return true
+      }
     }
     if (ts.isStringLiteralLike(node)) {
-      return ts.isImportDeclaration(node.parent)
+      return ts.isImportDeclaration(node.parent) || this.isRequireArgument(node)
     }
     return false
+  }
+
+  private isRequireBinding(node: ts.Node): boolean {
+    const varDecl = this.findEnclosingRequireDeclaration(node)
+    return varDecl !== undefined
+  }
+
+  private isRequireArgument(node: ts.Node): boolean {
+    return (
+      ts.isStringLiteralLike(node) &&
+      ts.isCallExpression(node.parent) &&
+      ts.isIdentifier(node.parent.expression) &&
+      node.parent.expression.text === 'require'
+    )
+  }
+
+  private isRequireVariableDeclaration(node: ts.Node): node is ts.VariableDeclaration {
+    return (
+      ts.isVariableDeclaration(node) &&
+      !!node.initializer &&
+      ts.isCallExpression(node.initializer) &&
+      ts.isIdentifier(node.initializer.expression) &&
+      node.initializer.expression.text === 'require' &&
+      node.initializer.arguments.length > 0 &&
+      ts.isStringLiteralLike(node.initializer.arguments[0])
+    )
+  }
+
+  private findEnclosingRequireDeclaration(node: ts.Node): ts.VariableDeclaration | undefined {
+    let current: ts.Node = node.parent
+    while (current && !ts.isVariableDeclaration(current) && !ts.isSourceFile(current)) {
+      current = current.parent
+    }
+    if (this.isRequireVariableDeclaration(current)) {
+      return current
+    }
+    return undefined
+  }
+
+  private resolveRequireDeclaration(node: ts.Node): ts.VariableDeclaration | undefined {
+    if (this.isRequireVariableDeclaration(node)) {
+      return node
+    }
+    return this.findEnclosingRequireDeclaration(node)
   }
 
   private isExternalImport(node: ts.Node, sym: ts.Symbol): boolean {
@@ -121,12 +170,20 @@ export class FileIndexer {
     if (ts.isStringLiteralLike(node) && ts.isImportDeclaration(node.parent)) {
       return node.text
     }
+    if (this.isRequireArgument(node)) {
+      return (node as ts.StringLiteralLike).text
+    }
     let current: ts.Node = node.parent
     while (current && !ts.isImportDeclaration(current) && !ts.isSourceFile(current)) {
       current = current.parent
     }
     if (current && ts.isImportDeclaration(current) && ts.isStringLiteral(current.moduleSpecifier)) {
       return (current.moduleSpecifier as ts.StringLiteral).text
+    }
+    const requireDecl = this.findEnclosingRequireDeclaration(node)
+    if (requireDecl) {
+      const arg = (requireDecl.initializer as ts.CallExpression).arguments[0]
+      return (arg as ts.StringLiteral).text
     }
     return undefined
   }
@@ -577,6 +634,29 @@ export class FileIndexer {
         if (!this.workspacePackageNames.has(pkgName)) {
           const moduleSymbol = ScipSymbol.package(moduleSpec, 'HEAD')
           const name = this.importedName(node)
+          const symbol = name
+            ? ScipSymbol.global(moduleSymbol, termDescriptor(name))
+            : moduleSymbol
+          return this.cached(node, symbol)
+        }
+      }
+    }
+
+    const requireDecl = this.resolveRequireDeclaration(node)
+    if (requireDecl) {
+      const requireArg = (requireDecl.initializer as ts.CallExpression).arguments[0] as ts.StringLiteral
+      const moduleSpec = requireArg.text
+      const tpe = this.checker.getTypeAtLocation(node)
+      for (const declaration of tpe.symbol?.declarations || []) {
+        return this.scipSymbol(declaration)
+      }
+      if (!moduleSpec.startsWith('.') && !moduleSpec.startsWith('/')) {
+        const pkgName = moduleSpec.startsWith('@')
+          ? moduleSpec.split('/').slice(0, 2).join('/')
+          : moduleSpec.split('/')[0]
+        if (!this.workspacePackageNames.has(pkgName)) {
+          const moduleSymbol = ScipSymbol.package(moduleSpec, 'HEAD')
+          const name = requireDecl.name && ts.isIdentifier(requireDecl.name) ? requireDecl.name.text : undefined
           const symbol = name
             ? ScipSymbol.global(moduleSymbol, termDescriptor(name))
             : moduleSymbol

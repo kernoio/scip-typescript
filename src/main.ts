@@ -127,6 +127,9 @@ function indexFiltered(options: MultiProjectOptions): void {
       ...compilerOptions,
       noEmit: true,
       skipLibCheck: true,
+      checkJs: true,
+      module: 'commonjs',
+      moduleResolution: 'node',
     }
   }
 
