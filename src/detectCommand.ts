@@ -17,6 +17,7 @@ export interface FlatProjectNode {
     allowJs?: boolean
   }
   dependencies?: string[]
+  imports?: Record<string, Record<string, number>>
 }
 
 export interface Workspace {
@@ -45,6 +46,7 @@ interface TreeNode {
   dependencyNames: string[]
   children: TreeNode[]
   pkg: Record<string, unknown> | undefined
+  imports?: Record<string, Record<string, number>>
 }
 
 function hasProjectMarker(dir: string): boolean {
@@ -87,9 +89,60 @@ function isTestFile(fileName: string): boolean {
   return base.includes('.test.') || base.includes('.spec.') || base.includes('.test-d.')
 }
 
+const SOURCE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx'])
+
+function extractSpecifiersFromSourceFile(filePath: string): string[] {
+  let text: string
+  try {
+    text = fs.readFileSync(filePath, 'utf-8')
+  } catch {
+    return []
+  }
+  const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, false)
+  const specifiers: string[] = []
+  for (const stmt of sourceFile.statements) {
+    const specifier = extractModuleSpecifier(stmt)
+    if (specifier !== undefined) {
+      specifiers.push(specifier)
+    }
+  }
+  return specifiers
+}
+
+function preParseAllSourceFiles(rootDir: string): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+
+  function walkAndParse(dir: string): void {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name)) continue
+        walkAndParse(path.join(dir, entry.name))
+        continue
+      }
+      if (!entry.isFile() || !SOURCE_EXTS.has(path.extname(entry.name))) continue
+      const filePath = path.join(dir, entry.name)
+      if (isTestFile(filePath) || filePath.match(/\.d\.[cm]?ts$/)) continue
+      const specifiers = extractSpecifiersFromSourceFile(filePath)
+      if (specifiers.length > 0) {
+        result.set(filePath, specifiers)
+      }
+    }
+  }
+
+  walkAndParse(rootDir)
+  return result
+}
+
 export function detect(cwd: string): DetectOutput {
   const rootDir = path.resolve(cwd)
   const allPackageJsonDirs = walkForPackageJsonDirs(rootDir)
+  const parsedSourceFiles = preParseAllSourceFiles(rootDir)
 
   const allPackageNames = new Set<string>()
   const dirToPkg = new Map<string, Record<string, unknown>>()
@@ -143,7 +196,7 @@ export function detect(cwd: string): DetectOutput {
       const pkg = dirToPkg.get(dir)
       const globs = extractWorkspaceGlobs(dir, pkg)
       const children = resolveWorkspaceGlobs(dir, globs)
-      const node = buildTreeNode(dir, rootDir, pkg, children, dirToPkg, allPackageNames, null)
+      const node = buildTreeNode(dir, rootDir, pkg, children, dirToPkg, allPackageNames, null, parsedSourceFiles)
       rootTreeNodes.push(node)
     }
   }
@@ -151,7 +204,7 @@ export function detect(cwd: string): DetectOutput {
   for (const dir of allPackageJsonDirs) {
     if (!claimedDirs.has(dir) && !workspaceRoots.includes(dir)) {
       const pkg = dirToPkg.get(dir)
-      const node = buildTreeNode(dir, rootDir, pkg, [], dirToPkg, allPackageNames, null)
+      const node = buildTreeNode(dir, rootDir, pkg, [], dirToPkg, allPackageNames, null, parsedSourceFiles)
       rootTreeNodes.push(node)
     }
   }
@@ -207,7 +260,7 @@ function deriveWorkspaceType(dir: string, buildTool: string | undefined, pkg: Re
   return 'standalone'
 }
 
-function producesArtifacts(_dir: string, pkg: Record<string, unknown> | undefined, hasChildren: boolean): boolean {
+function producesArtifacts(pkg: Record<string, unknown> | undefined, hasChildren: boolean): boolean {
   if (!pkg) return true
   if (pkg['workspaces'] !== undefined && pkg['workspaces'] !== null && hasChildren) return false
   return true
@@ -231,7 +284,7 @@ function flattenTree(
     path: node.relPath,
     parent: parentPath,
     children: childPaths,
-    producesArtifacts: producesArtifacts(node.dir, node.pkg, node.children.length > 0),
+    producesArtifacts: producesArtifacts(node.pkg, node.children.length > 0),
     buildFiles: node.buildFiles,
     languages: node.languages,
   }
@@ -248,6 +301,10 @@ function flattenTree(
     flat.dependencies = resolvedDependencies
   }
 
+  if (node.imports && Object.keys(node.imports).length > 0) {
+    flat.imports = node.imports
+  }
+
   result.push(flat)
 
   for (const child of node.children) {
@@ -257,26 +314,85 @@ function flattenTree(
   return result
 }
 
-function buildTreeNode(
-  dir: string,
-  rootDir: string,
-  pkg: Record<string, unknown> | undefined,
-  childDirs: string[],
-  dirToPkg: Map<string, Record<string, unknown>>,
+interface InternalNameResolution {
+  internalNames: Set<string>
+  pathAliases: Set<string>
+  nestedProjectDirs: Set<string>
+}
+
+function readTsconfigCompilerOptions(tsconfigPath: string): { paths?: Record<string, unknown>; baseUrl?: string } | undefined {
+  const readResult = ts.readConfigFile(tsconfigPath, p => ts.sys.readFile(p))
+  if (readResult.error) return undefined
+  const config = readResult.config as { compilerOptions?: { paths?: Record<string, unknown>; baseUrl?: string } }
+  return config.compilerOptions
+}
+
+function collectPathAliases(compilerOptions: { paths?: Record<string, unknown> }): Set<string> {
+  const aliases = new Set<string>()
+  if (!compilerOptions.paths) return aliases
+  for (const key of Object.keys(compilerOptions.paths)) {
+    const prefix = key.endsWith('*') ? key.slice(0, -1) : key
+    if (prefix) aliases.add(prefix)
+  }
+  return aliases
+}
+
+function collectBaseUrlDirectories(tsconfigPath: string, baseUrl: string): string[] {
+  const baseDir = path.resolve(path.dirname(tsconfigPath), baseUrl)
+  try {
+    return fs.readdirSync(baseDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+  } catch {
+    return []
+  }
+}
+
+function findNestedProjectDirs(dir: string, dirToPkg: Map<string, Record<string, unknown>>): Set<string> {
+  const nested = new Set<string>()
+  for (const projectDir of dirToPkg.keys()) {
+    if (projectDir !== dir && projectDir.startsWith(dir + path.sep)) {
+      nested.add(projectDir)
+    }
+  }
+  return nested
+}
+
+function resolveInternalNames(
+  tsconfigPath: string | undefined,
   allPackageNames: Set<string>,
-  parentBuildTool: string | null
-): TreeNode {
-  const name = (pkg?.['name'] as string | undefined) ?? path.basename(dir)
-  const relPath = path.relative(rootDir, dir) || '.'
+  dir: string,
+  dirToPkg: Map<string, Record<string, unknown>>
+): InternalNameResolution {
+  const internalNames = new Set(allPackageNames)
+  let pathAliases = new Set<string>()
 
-  const buildTool = detectBuildTool(dir, rootDir, parentBuildTool)
-  const config = detectConfig(dir)
-  const buildFiles = collectBuildFiles(dir, buildTool, config)
+  if (tsconfigPath) {
+    const compilerOptions = readTsconfigCompilerOptions(tsconfigPath)
+    if (compilerOptions) {
+      pathAliases = collectPathAliases(compilerOptions)
+      if (compilerOptions.baseUrl) {
+        for (const name of collectBaseUrlDirectories(tsconfigPath, compilerOptions.baseUrl)) {
+          internalNames.add(name)
+        }
+      }
+    }
+  }
 
+  return { internalNames, pathAliases, nestedProjectDirs: findNestedProjectDirs(dir, dirToPkg) }
+}
+
+function resolveDependencies(
+  pkg: Record<string, unknown> | undefined,
+  dir: string,
+  allPackageNames: Set<string>,
+  tsconfigPath: string | undefined,
+  parsedSourceFiles?: Map<string, string[]>
+): string[] {
+  const ownName = pkg?.['name'] as string | undefined
   const allDeps: Record<string, string> = {
     ...(pkg?.['dependencies'] as Record<string, string> | undefined),
   }
-  const ownName = pkg?.['name'] as string | undefined
   const declaredDeps = new Set(Object.keys(allDeps).filter(dep => dep !== ownName && allPackageNames.has(dep)))
 
   const undeclaredSiblings = new Set<string>()
@@ -286,20 +402,54 @@ function buildTreeNode(
     }
   }
 
+  const implicitDeps = undeclaredSiblings.size > 0
+    ? scanImportedSiblings(dir, undeclaredSiblings, pkg, tsconfigPath, parsedSourceFiles)
+    : []
+  return [...new Set([...declaredDeps, ...implicitDeps])].sort()
+}
+
+function buildImportHeatmap(
+  dir: string,
+  tsconfigPath: string | undefined,
+  allPackageNames: Set<string>,
+  dirToPkg: Map<string, Record<string, unknown>>,
+  parsedSourceFiles?: Map<string, string[]>
+): Record<string, Record<string, number>> {
+  const { internalNames, pathAliases, nestedProjectDirs } = resolveInternalNames(tsconfigPath, allPackageNames, dir, dirToPkg)
+  return scanImportHeatmap(dir, tsconfigPath, internalNames, pathAliases, nestedProjectDirs, parsedSourceFiles)
+}
+
+function buildTreeNode(
+  dir: string,
+  rootDir: string,
+  pkg: Record<string, unknown> | undefined,
+  childDirs: string[],
+  dirToPkg: Map<string, Record<string, unknown>>,
+  allPackageNames: Set<string>,
+  parentBuildTool: string | null,
+  parsedSourceFiles?: Map<string, string[]>
+): TreeNode {
+  const name = (pkg?.['name'] as string | undefined) ?? path.basename(dir)
+  const relPath = path.relative(rootDir, dir) || '.'
+
+  const buildTool = detectBuildTool(dir, rootDir, parentBuildTool)
+  const config = detectConfig(dir)
+  const buildFiles = collectBuildFiles(dir, buildTool, config)
+
   const tsconfigPath = config ? path.join(dir, config.configFile) : undefined
-  const implicitDeps = undeclaredSiblings.size > 0 ? scanImportedSiblings(dir, undeclaredSiblings, pkg, tsconfigPath) : []
-  const dependencyNames = [...new Set([...declaredDeps, ...implicitDeps])].sort()
+  const dependencyNames = resolveDependencies(pkg, dir, allPackageNames, tsconfigPath, parsedSourceFiles)
+  const imports = buildImportHeatmap(dir, tsconfigPath, allPackageNames, dirToPkg, parsedSourceFiles)
 
   const children: TreeNode[] = []
   for (const childDir of childDirs) {
     const childPkg = dirToPkg.get(childDir)
     const childGlobs = extractWorkspaceGlobs(childDir, childPkg)
     const grandchildren = childGlobs.length > 0 ? resolveWorkspaceGlobs(childDir, childGlobs) : []
-    const childNode = buildTreeNode(childDir, rootDir, childPkg, grandchildren, dirToPkg, allPackageNames, buildTool ?? null)
+    const childNode = buildTreeNode(childDir, rootDir, childPkg, grandchildren, dirToPkg, allPackageNames, buildTool ?? null, parsedSourceFiles)
     children.push(childNode)
   }
 
-  return { name, dir, relPath, buildFiles, languages: [], buildTool, config, dependencyNames, children, pkg }
+  return { name, dir, relPath, buildFiles, languages: [], buildTool, config, dependencyNames, children, pkg, imports }
 }
 
 function collectAllNodes(node: TreeNode, result: TreeNode[]): void {
@@ -485,20 +635,20 @@ function collectBuildFiles(
   return files
 }
 
+function parseTsconfigForDetect(tsconfigPath: string): { type: 'typescript'; configFile: string; allowJs?: boolean } {
+  const readResult = ts.readConfigFile(tsconfigPath, p => ts.sys.readFile(p))
+  if (readResult.error) return { type: 'typescript', configFile: 'tsconfig.json' }
+  const config = readResult.config as { compilerOptions?: { allowJs?: boolean } }
+  if (config.compilerOptions?.allowJs) {
+    return { type: 'typescript', configFile: 'tsconfig.json', allowJs: true }
+  }
+  return { type: 'typescript', configFile: 'tsconfig.json' }
+}
+
 function detectConfig(dir: string): { type: 'typescript'; configFile: string; allowJs?: boolean } | undefined {
   const tsconfigPath = path.join(dir, 'tsconfig.json')
   if (fs.existsSync(tsconfigPath)) {
-    const readResult = ts.readConfigFile(tsconfigPath, p => ts.sys.readFile(p))
-    if (!readResult.error) {
-      const config = readResult.config as { compilerOptions?: { allowJs?: boolean } }
-      const allowJs = config.compilerOptions?.allowJs === true
-      const entry: { type: 'typescript'; configFile: string; allowJs?: boolean } = { type: 'typescript', configFile: 'tsconfig.json' }
-      if (allowJs) {
-        entry.allowJs = true
-      }
-      return entry
-    }
-    return { type: 'typescript', configFile: 'tsconfig.json' }
+    return parseTsconfigForDetect(tsconfigPath)
   }
   if (fs.existsSync(path.join(dir, 'jsconfig.json'))) {
     return { type: 'typescript', configFile: 'jsconfig.json' }
@@ -602,7 +752,8 @@ function scanImportedSiblings(
   dir: string,
   siblingNames: Set<string>,
   pkg: Record<string, unknown> | undefined,
-  tsconfigPath?: string
+  tsconfigPath?: string,
+  parsedSourceFiles?: Map<string, string[]>
 ): string[] {
   const discovered = new Set<string>()
 
@@ -613,12 +764,15 @@ function scanImportedSiblings(
     return [...discovered]
   }
 
-  const scanFile = (filePath: string) => {
-    const text = fs.readFileSync(filePath, 'utf-8')
-    const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, false)
-    for (const stmt of sourceFile.statements) {
-      const specifier = extractModuleSpecifier(stmt)
-      if (specifier === undefined) continue
+  if (!tsconfigPath) return []
+
+  const tsconfigFiles = getFilesFromTsconfig(tsconfigPath)
+  if (!tsconfigFiles) return []
+
+  for (const filePath of tsconfigFiles) {
+    if (isTestFile(filePath) || filePath.match(/\.d\.[cm]?ts$/)) continue
+    const specifiers = getSpecifiersForFile(filePath, parsedSourceFiles)
+    for (const specifier of specifiers) {
       const packageName = extractPackageName(specifier)
       if (packageName && siblingNames.has(packageName)) {
         discovered.add(packageName)
@@ -626,20 +780,7 @@ function scanImportedSiblings(
     }
   }
 
-  if (tsconfigPath) {
-    const readResult = ts.readConfigFile(tsconfigPath, p => ts.sys.readFile(p))
-    if (!readResult.error) {
-      const basePath = path.dirname(tsconfigPath)
-      const parsed = ts.parseJsonConfigFileContent(readResult.config, ts.sys, basePath)
-      for (const filePath of parsed.fileNames) {
-        if (isTestFile(filePath) || filePath.match(/\.d\.[cm]?ts$/)) continue
-        scanFile(filePath)
-      }
-      return [...discovered]
-    }
-  }
-
-  return []
+  return [...discovered]
 }
 
 function walkFromFile(
@@ -680,6 +821,28 @@ function walkFromFile(
 }
 
 
+function extractRequireArgument(expr: ts.Expression): string | undefined {
+  if (!ts.isCallExpression(expr)) return undefined
+  if (!ts.isIdentifier(expr.expression) || expr.expression.text !== 'require') return undefined
+  if (expr.arguments.length === 0) return undefined
+  const arg = expr.arguments[0]
+  if (ts.isStringLiteral(arg)) return arg.text
+  return undefined
+}
+
+function extractRequireSpecifier(stmt: ts.Statement): string | undefined {
+  if (ts.isExpressionStatement(stmt)) {
+    return extractRequireArgument(stmt.expression)
+  }
+  if (!ts.isVariableStatement(stmt)) return undefined
+  for (const decl of stmt.declarationList.declarations) {
+    if (!decl.initializer) continue
+    const arg = extractRequireArgument(decl.initializer)
+    if (arg) return arg
+  }
+  return undefined
+}
+
 function extractModuleSpecifier(stmt: ts.Statement): string | undefined {
   if (ts.isImportDeclaration(stmt) && ts.isStringLiteral(stmt.moduleSpecifier)) {
     return stmt.moduleSpecifier.text
@@ -687,27 +850,8 @@ function extractModuleSpecifier(stmt: ts.Statement): string | undefined {
   if (ts.isExportDeclaration(stmt) && stmt.moduleSpecifier && ts.isStringLiteral(stmt.moduleSpecifier)) {
     return stmt.moduleSpecifier.text
   }
-  if (ts.isExpressionStatement(stmt)) {
-    const expr = stmt.expression
-    if (ts.isCallExpression(expr) && expr.arguments.length > 0) {
-      const callee = expr.expression
-      if (ts.isIdentifier(callee) && callee.text === 'require') {
-        const arg = expr.arguments[0]
-        if (ts.isStringLiteral(arg)) return arg.text
-      }
-    }
-  }
-  if (ts.isVariableStatement(stmt)) {
-    for (const decl of stmt.declarationList.declarations) {
-      if (decl.initializer && ts.isCallExpression(decl.initializer)) {
-        const callee = decl.initializer.expression
-        if (ts.isIdentifier(callee) && callee.text === 'require' && decl.initializer.arguments.length > 0) {
-          const arg = decl.initializer.arguments[0]
-          if (ts.isStringLiteral(arg)) return arg.text
-        }
-      }
-    }
-  }
+  const requireSpecifier = extractRequireSpecifier(stmt)
+  if (requireSpecifier) return requireSpecifier
   return undefined
 }
 
@@ -737,22 +881,104 @@ function countFiles(
   for (const entry of entries) {
     if (entry.isDirectory()) {
       const childDir = path.join(dir, entry.name)
-      if (!SKIP_DIRS.has(entry.name) && !TEST_PATTERNS.has(entry.name) && !(excludeDirs?.has(childDir))) {
-        countFiles(childDir, tsCount, jsCount, excludeDirs)
-      }
-    } else if (entry.isFile()) {
-      const name = entry.name
-      if (isTestFile(name)) continue
-      if (name.endsWith('.d.ts')) {
-        continue
-      }
-      if (name.endsWith('.ts') || name.endsWith('.tsx')) {
-        tsCount.value++
-      } else if (name.endsWith('.js') || name.endsWith('.jsx')) {
-        jsCount.value++
-      }
+      if (SKIP_DIRS.has(entry.name) || TEST_PATTERNS.has(entry.name) || excludeDirs?.has(childDir)) continue
+      countFiles(childDir, tsCount, jsCount, excludeDirs)
+      continue
+    }
+    if (!entry.isFile()) continue
+    const name = entry.name
+    if (isTestFile(name) || name.endsWith('.d.ts')) continue
+    if (name.endsWith('.ts') || name.endsWith('.tsx')) {
+      tsCount.value++
+    } else if (name.endsWith('.js') || name.endsWith('.jsx')) {
+      jsCount.value++
     }
   }
+}
+
+function isExternalSpecifier(specifier: string, internalNames: Set<string>, pathAliases: Set<string>): boolean {
+  if (specifier.startsWith('.') || specifier.startsWith('#')) return false
+  const packageName = extractPackageName(specifier)
+  if (!packageName) return false
+  if (internalNames.has(packageName)) return false
+  if ([...pathAliases].some(alias => specifier === alias || specifier.startsWith(alias))) return false
+  return true
+}
+
+function getSpecifiersForFile(filePath: string, parsedSourceFiles: Map<string, string[]> | undefined): string[] {
+  return parsedSourceFiles?.get(filePath) ?? extractSpecifiersFromSourceFile(filePath)
+}
+
+function getFilesFromTsconfig(tsconfigPath: string): string[] | undefined {
+  const readResult = ts.readConfigFile(tsconfigPath, p => ts.sys.readFile(p))
+  if (readResult.error) return undefined
+  const basePath = path.dirname(tsconfigPath)
+  const parsed = ts.parseJsonConfigFileContent(readResult.config, ts.sys, basePath)
+  return parsed.fileNames.length > 0 ? parsed.fileNames : undefined
+}
+
+function walkDirForSourceFiles(dir: string, excludeDirs: Set<string>): string[] {
+  const files: string[] = []
+  const recurse = (d: string) => {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const childPath = path.join(d, entry.name)
+        if (SKIP_DIRS.has(entry.name) || excludeDirs.has(childPath)) continue
+        recurse(childPath)
+        continue
+      }
+      if (!entry.isFile() || !SOURCE_EXTS.has(path.extname(entry.name))) continue
+      files.push(path.join(d, entry.name))
+    }
+  }
+  recurse(dir)
+  return files
+}
+
+function recordExternalImports(
+  filePath: string,
+  projectDir: string,
+  internalNames: Set<string>,
+  pathAliases: Set<string>,
+  result: Record<string, Record<string, number>>,
+  parsedSourceFiles?: Map<string, string[]>
+): void {
+  if (isTestFile(filePath) || filePath.match(/\.d\.[cm]?ts$/)) return
+  const relativeDir = path.relative(projectDir, path.dirname(filePath)) || '.'
+  const specifiers = getSpecifiersForFile(filePath, parsedSourceFiles)
+  for (const specifier of specifiers) {
+    if (!isExternalSpecifier(specifier, internalNames, pathAliases)) continue
+    const packageName = extractPackageName(specifier)!
+    if (!result[relativeDir]) result[relativeDir] = {}
+    result[relativeDir][packageName] = (result[relativeDir][packageName] ?? 0) + 1
+  }
+}
+
+function scanImportHeatmap(
+  dir: string,
+  tsconfigPath: string | undefined,
+  internalNames: Set<string>,
+  pathAliases: Set<string>,
+  excludeDirs: Set<string> = new Set(),
+  parsedSourceFiles?: Map<string, string[]>
+): Record<string, Record<string, number>> {
+  const result: Record<string, Record<string, number>> = {}
+
+  const filesToScan = tsconfigPath
+    ? (getFilesFromTsconfig(tsconfigPath) ?? walkDirForSourceFiles(dir, excludeDirs))
+    : walkDirForSourceFiles(dir, excludeDirs)
+
+  for (const filePath of filesToScan) {
+    recordExternalImports(filePath, dir, internalNames, pathAliases, result, parsedSourceFiles)
+  }
+
+  return result
 }
 
 function cleanOutput(obj: unknown): unknown {
