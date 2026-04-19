@@ -17,7 +17,7 @@ export interface FlatProjectNode {
     allowJs?: boolean
   }
   dependencies?: string[]
-  imports?: Record<string, Record<string, number>>
+  imports?: Record<string, Record<string, Record<string, number>>>
 }
 
 export interface Workspace {
@@ -46,7 +46,7 @@ interface TreeNode {
   dependencyNames: string[]
   children: TreeNode[]
   pkg: Record<string, unknown> | undefined
-  imports?: Record<string, Record<string, number>>
+  imports?: Record<string, Record<string, Record<string, number>>>
 }
 
 function hasProjectMarker(dir: string): boolean {
@@ -73,6 +73,13 @@ const SKIP_DIRS = new Set([
   '.turbo',
   '.cache',
   '.yarn',
+  'test',
+  'tests',
+  '__tests__',
+  'testing',
+  'fixtures',
+  '__fixtures__',
+  '__mocks__',
 ])
 
 const TEST_PATTERNS = new Set([
@@ -91,7 +98,12 @@ function isTestFile(fileName: string): boolean {
 
 const SOURCE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx'])
 
-function extractSpecifiersFromSourceFile(filePath: string): string[] {
+interface ModuleImport {
+  module: string
+  namedSpecifiers: string[]
+}
+
+function extractSpecifiersFromSourceFile(filePath: string): ModuleImport[] {
   let text: string
   try {
     text = fs.readFileSync(filePath, 'utf-8')
@@ -99,18 +111,18 @@ function extractSpecifiersFromSourceFile(filePath: string): string[] {
     return []
   }
   const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, false)
-  const specifiers: string[] = []
+  const imports: ModuleImport[] = []
   for (const stmt of sourceFile.statements) {
-    const specifier = extractModuleSpecifier(stmt)
-    if (specifier !== undefined) {
-      specifiers.push(specifier)
+    const moduleImport = extractModuleSpecifier(stmt)
+    if (moduleImport !== undefined) {
+      imports.push(moduleImport)
     }
   }
-  return specifiers
+  return imports
 }
 
-function preParseAllSourceFiles(rootDir: string): Map<string, string[]> {
-  const result = new Map<string, string[]>()
+function preParseAllSourceFiles(rootDir: string): Map<string, ModuleImport[]> {
+  const result = new Map<string, ModuleImport[]>()
 
   function walkAndParse(dir: string): void {
     let entries: fs.Dirent[]
@@ -128,9 +140,9 @@ function preParseAllSourceFiles(rootDir: string): Map<string, string[]> {
       if (!entry.isFile() || !SOURCE_EXTS.has(path.extname(entry.name))) continue
       const filePath = path.join(dir, entry.name)
       if (isTestFile(filePath) || filePath.match(/\.d\.[cm]?ts$/)) continue
-      const specifiers = extractSpecifiersFromSourceFile(filePath)
-      if (specifiers.length > 0) {
-        result.set(filePath, specifiers)
+      const imports = extractSpecifiersFromSourceFile(filePath)
+      if (imports.length > 0) {
+        result.set(filePath, imports)
       }
     }
   }
@@ -387,7 +399,7 @@ function resolveDependencies(
   dir: string,
   allPackageNames: Set<string>,
   tsconfigPath: string | undefined,
-  parsedSourceFiles?: Map<string, string[]>
+  parsedSourceFiles?: Map<string, ModuleImport[]>
 ): string[] {
   const ownName = pkg?.['name'] as string | undefined
   const allDeps: Record<string, string> = {
@@ -413,8 +425,8 @@ function buildImportHeatmap(
   tsconfigPath: string | undefined,
   allPackageNames: Set<string>,
   dirToPkg: Map<string, Record<string, unknown>>,
-  parsedSourceFiles?: Map<string, string[]>
-): Record<string, Record<string, number>> {
+  parsedSourceFiles?: Map<string, ModuleImport[]>
+): Record<string, Record<string, Record<string, number>>> {
   const { internalNames, pathAliases, nestedProjectDirs } = resolveInternalNames(tsconfigPath, allPackageNames, dir, dirToPkg)
   return scanImportHeatmap(dir, tsconfigPath, internalNames, pathAliases, nestedProjectDirs, parsedSourceFiles)
 }
@@ -427,7 +439,7 @@ function buildTreeNode(
   dirToPkg: Map<string, Record<string, unknown>>,
   allPackageNames: Set<string>,
   parentBuildTool: string | null,
-  parsedSourceFiles?: Map<string, string[]>
+  parsedSourceFiles?: Map<string, ModuleImport[]>
 ): TreeNode {
   const name = (pkg?.['name'] as string | undefined) ?? path.basename(dir)
   const relPath = path.relative(rootDir, dir) || '.'
@@ -753,7 +765,7 @@ function scanImportedSiblings(
   siblingNames: Set<string>,
   pkg: Record<string, unknown> | undefined,
   tsconfigPath?: string,
-  parsedSourceFiles?: Map<string, string[]>
+  parsedSourceFiles?: Map<string, ModuleImport[]>
 ): string[] {
   const discovered = new Set<string>()
 
@@ -771,9 +783,9 @@ function scanImportedSiblings(
 
   for (const filePath of tsconfigFiles) {
     if (isTestFile(filePath) || filePath.match(/\.d\.[cm]?ts$/)) continue
-    const specifiers = getSpecifiersForFile(filePath, parsedSourceFiles)
-    for (const specifier of specifiers) {
-      const packageName = extractPackageName(specifier)
+    const moduleImports = getSpecifiersForFile(filePath, parsedSourceFiles)
+    for (const moduleImport of moduleImports) {
+      const packageName = extractPackageName(moduleImport.module)
       if (packageName && siblingNames.has(packageName)) {
         discovered.add(packageName)
       }
@@ -802,17 +814,17 @@ function walkFromFile(
   const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, false)
 
   for (const stmt of sourceFile.statements) {
-    const specifier = extractModuleSpecifier(stmt)
-    if (specifier === undefined) continue
+    const moduleImport = extractModuleSpecifier(stmt)
+    if (moduleImport === undefined) continue
 
-    if (specifier.startsWith('.') || specifier.startsWith('/')) {
-      const resolved = ts.resolveModuleName(specifier, filePath, ENTRY_POINT_RESOLUTION_OPTIONS, ts.sys)
+    if (moduleImport.module.startsWith('.') || moduleImport.module.startsWith('/')) {
+      const resolved = ts.resolveModuleName(moduleImport.module, filePath, ENTRY_POINT_RESOLUTION_OPTIONS, ts.sys)
       const resolvedPath = resolved.resolvedModule?.resolvedFileName
       if (resolvedPath) {
         walkFromFile(resolvedPath, siblingNames, discovered, visited)
       }
     } else {
-      const packageName = extractPackageName(specifier)
+      const packageName = extractPackageName(moduleImport.module)
       if (packageName && siblingNames.has(packageName)) {
         discovered.add(packageName)
       }
@@ -821,7 +833,7 @@ function walkFromFile(
 }
 
 
-function extractRequireArgument(expr: ts.Expression): string | undefined {
+function extractRequireCall(expr: ts.Expression): string | undefined {
   if (!ts.isCallExpression(expr)) return undefined
   if (!ts.isIdentifier(expr.expression) || expr.expression.text !== 'require') return undefined
   if (expr.arguments.length === 0) return undefined
@@ -830,29 +842,62 @@ function extractRequireArgument(expr: ts.Expression): string | undefined {
   return undefined
 }
 
-function extractRequireSpecifier(stmt: ts.Statement): string | undefined {
+function extractRequireSpecifier(stmt: ts.Statement): ModuleImport | undefined {
   if (ts.isExpressionStatement(stmt)) {
-    return extractRequireArgument(stmt.expression)
+    const module = extractRequireCall(stmt.expression)
+    if (module) return { module, namedSpecifiers: ['*'] }
+    return undefined
   }
   if (!ts.isVariableStatement(stmt)) return undefined
   for (const decl of stmt.declarationList.declarations) {
     if (!decl.initializer) continue
-    const arg = extractRequireArgument(decl.initializer)
-    if (arg) return arg
+    const module = extractRequireCall(decl.initializer)
+    if (!module) continue
+    if (ts.isObjectBindingPattern(decl.name)) {
+      const namedSpecifiers = decl.name.elements
+        .map(el => (ts.isIdentifier(el.propertyName ?? el.name) ? (el.propertyName ?? el.name) as ts.Identifier : undefined))
+        .filter((id): id is ts.Identifier => id !== undefined)
+        .map(id => id.text)
+      return { module, namedSpecifiers: namedSpecifiers.length > 0 ? namedSpecifiers : ['default'] }
+    }
+    return { module, namedSpecifiers: ['default'] }
   }
   return undefined
 }
 
-function extractModuleSpecifier(stmt: ts.Statement): string | undefined {
+function extractNamedImportSpecifiers(importClause: ts.ImportClause | undefined): string[] {
+  if (!importClause) return ['*']
+  const specifiers: string[] = []
+  if (importClause.name) {
+    specifiers.push('default')
+  }
+  if (importClause.namedBindings) {
+    if (ts.isNamespaceImport(importClause.namedBindings)) {
+      specifiers.push('*')
+    } else {
+      for (const el of importClause.namedBindings.elements) {
+        specifiers.push(el.propertyName ? el.propertyName.text : el.name.text)
+      }
+    }
+  }
+  return specifiers.length > 0 ? specifiers : ['*']
+}
+
+function extractModuleSpecifier(stmt: ts.Statement): ModuleImport | undefined {
   if (ts.isImportDeclaration(stmt) && ts.isStringLiteral(stmt.moduleSpecifier)) {
-    return stmt.moduleSpecifier.text
+    const module = stmt.moduleSpecifier.text
+    const namedSpecifiers = extractNamedImportSpecifiers(stmt.importClause)
+    return { module, namedSpecifiers }
   }
   if (ts.isExportDeclaration(stmt) && stmt.moduleSpecifier && ts.isStringLiteral(stmt.moduleSpecifier)) {
-    return stmt.moduleSpecifier.text
+    const module = stmt.moduleSpecifier.text
+    if (stmt.exportClause && ts.isNamedExports(stmt.exportClause)) {
+      const namedSpecifiers = stmt.exportClause.elements.map(el => el.propertyName ? el.propertyName.text : el.name.text)
+      return { module, namedSpecifiers: namedSpecifiers.length > 0 ? namedSpecifiers : ['*'] }
+    }
+    return { module, namedSpecifiers: ['*'] }
   }
-  const requireSpecifier = extractRequireSpecifier(stmt)
-  if (requireSpecifier) return requireSpecifier
-  return undefined
+  return extractRequireSpecifier(stmt)
 }
 
 function extractPackageName(specifier: string): string | undefined {
@@ -905,7 +950,7 @@ function isExternalSpecifier(specifier: string, internalNames: Set<string>, path
   return true
 }
 
-function getSpecifiersForFile(filePath: string, parsedSourceFiles: Map<string, string[]> | undefined): string[] {
+function getSpecifiersForFile(filePath: string, parsedSourceFiles: Map<string, ModuleImport[]> | undefined): ModuleImport[] {
   return parsedSourceFiles?.get(filePath) ?? extractSpecifiersFromSourceFile(filePath)
 }
 
@@ -946,17 +991,20 @@ function recordExternalImports(
   projectDir: string,
   internalNames: Set<string>,
   pathAliases: Set<string>,
-  result: Record<string, Record<string, number>>,
-  parsedSourceFiles?: Map<string, string[]>
+  result: Record<string, Record<string, Record<string, number>>>,
+  parsedSourceFiles?: Map<string, ModuleImport[]>
 ): void {
   if (isTestFile(filePath) || filePath.match(/\.d\.[cm]?ts$/)) return
   const relativeDir = path.relative(projectDir, path.dirname(filePath)) || '.'
-  const specifiers = getSpecifiersForFile(filePath, parsedSourceFiles)
-  for (const specifier of specifiers) {
-    if (!isExternalSpecifier(specifier, internalNames, pathAliases)) continue
-    const packageName = extractPackageName(specifier)!
+  const moduleImports = getSpecifiersForFile(filePath, parsedSourceFiles)
+  for (const moduleImport of moduleImports) {
+    if (!isExternalSpecifier(moduleImport.module, internalNames, pathAliases)) continue
+    const packageName = extractPackageName(moduleImport.module)!
     if (!result[relativeDir]) result[relativeDir] = {}
-    result[relativeDir][packageName] = (result[relativeDir][packageName] ?? 0) + 1
+    if (!result[relativeDir][packageName]) result[relativeDir][packageName] = {}
+    for (const namedSpecifier of moduleImport.namedSpecifiers) {
+      result[relativeDir][packageName][namedSpecifier] = (result[relativeDir][packageName][namedSpecifier] ?? 0) + 1
+    }
   }
 }
 
@@ -966,9 +1014,9 @@ function scanImportHeatmap(
   internalNames: Set<string>,
   pathAliases: Set<string>,
   excludeDirs: Set<string> = new Set(),
-  parsedSourceFiles?: Map<string, string[]>
-): Record<string, Record<string, number>> {
-  const result: Record<string, Record<string, number>> = {}
+  parsedSourceFiles?: Map<string, ModuleImport[]>
+): Record<string, Record<string, Record<string, number>>> {
+  const result: Record<string, Record<string, Record<string, number>>> = {}
 
   const filesToScan = tsconfigPath
     ? (getFilesFromTsconfig(tsconfigPath) ?? walkDirForSourceFiles(dir, excludeDirs))
