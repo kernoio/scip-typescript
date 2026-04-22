@@ -169,12 +169,18 @@ function indexFiltered(options: MultiProjectOptions): void {
     config.fileNames = config.fileNames.filter(f => !isIndexTestFile(f))
   }
 
-  if (!config || config.fileNames.length === 0) {
+  if (!config) {
     console.error(
-      `error: no files found in package '${options.filter}' at ${targetPackage.absPath}`
+      `error: no tsconfig found for package '${options.filter}' at ${targetPackage.absPath}`
     )
     process.exitCode = 1
     return
+  }
+
+  if (config.fileNames.length === 0) {
+    console.warn(
+      `warning: no TypeScript files in package '${options.filter}' at ${targetPackage.absPath}, writing metadata-only index`
+    )
   }
 
   const output = fs.openSync(options.output, 'w')
@@ -221,13 +227,12 @@ function indexFiltered(options: MultiProjectOptions): void {
     ).index()
   } finally {
     fs.close(output)
-    if (documentCount > 0) {
-      console.log(`done ${options.output}`)
-    } else {
-      process.exitCode = 1
-      fs.rmSync(options.output)
-      console.log(`error: no files got indexed for package '${options.filter}'`)
+    if (documentCount === 0) {
+      console.warn(
+        `warning: package '${options.filter}' produced 0 documents; wrote metadata-only index`
+      )
     }
+    console.log(`done ${options.output}`)
     for (const link of createdSymlinks) {
       try { fs.unlinkSync(link) } catch {}
     }
