@@ -195,6 +195,7 @@ function indexFiltered(options: MultiProjectOptions): void {
     parsedCommandLines: new Map(),
   }
 
+  let indexingCompleted = false
   try {
     writeIndex(
       new scip.scip.Index({
@@ -225,14 +226,17 @@ function indexFiltered(options: MultiProjectOptions): void {
       } as ProjectOptions,
       cache
     ).index()
+    indexingCompleted = true
   } finally {
     fs.close(output)
-    if (documentCount === 0) {
-      console.warn(
-        `warning: package '${options.filter}' produced 0 documents; wrote metadata-only index`
-      )
+    if (indexingCompleted) {
+      if (documentCount === 0) {
+        console.warn(
+          `warning: package '${options.filter}' produced 0 documents; wrote metadata-only index`
+        )
+      }
+      console.log(`done ${options.output}`)
     }
-    console.log(`done ${options.output}`)
     for (const link of createdSymlinks) {
       try { fs.unlinkSync(link) } catch {}
     }
