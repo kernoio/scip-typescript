@@ -1000,8 +1000,8 @@ function recordExternalImports(
   for (const moduleImport of moduleImports) {
     if (!isExternalSpecifier(moduleImport.module, internalNames, pathAliases)) continue
     const packageName = extractPackageName(moduleImport.module)!
-    if (!result[relativeDir]) result[relativeDir] = {}
-    if (!result[relativeDir][packageName]) result[relativeDir][packageName] = {}
+    if (!result[relativeDir]) result[relativeDir] = Object.create(null)
+    if (!result[relativeDir][packageName]) result[relativeDir][packageName] = Object.create(null)
     for (const namedSpecifier of moduleImport.namedSpecifiers) {
       result[relativeDir][packageName][namedSpecifier] = (result[relativeDir][packageName][namedSpecifier] ?? 0) + 1
     }
@@ -1016,7 +1016,7 @@ function scanImportHeatmap(
   excludeDirs: Set<string> = new Set(),
   parsedSourceFiles?: Map<string, ModuleImport[]>
 ): Record<string, Record<string, Record<string, number>>> {
-  const result: Record<string, Record<string, Record<string, number>>> = {}
+  const result: Record<string, Record<string, Record<string, number>>> = Object.create(null)
 
   const filesToScan = tsconfigPath
     ? (getFilesFromTsconfig(tsconfigPath) ?? walkDirForSourceFiles(dir, excludeDirs))

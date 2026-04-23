@@ -273,16 +273,29 @@ function loadConfigFile(
     )
   }
   const config = readResult.config as {
-    extends?: string
+    extends?: string | string[]
     compilerOptions?: Record<string, unknown>
     include?: string[]
     exclude?: string[]
   }
   if (config.extends) {
-    const extendsPath = path.resolve(path.dirname(absolute), config.extends)
-    if (!ts.sys.fileExists(extendsPath)) {
-      console.warn(`Warning: Cannot resolve extends "${config.extends}", continuing without inherited settings`)
-      delete config.extends
+    const configDir = path.dirname(absolute)
+    if (Array.isArray(config.extends)) {
+      const resolved = config.extends.filter(ext => {
+        const p = path.resolve(configDir, ext)
+        if (!ts.sys.fileExists(p)) {
+          console.warn(`Warning: Cannot resolve extends "${ext}", continuing without inherited settings`)
+          return false
+        }
+        return true
+      })
+      config.extends = resolved.length > 0 ? resolved : undefined
+    } else {
+      const extendsPath = path.resolve(configDir, config.extends)
+      if (!ts.sys.fileExists(extendsPath)) {
+        console.warn(`Warning: Cannot resolve extends "${config.extends}", continuing without inherited settings`)
+        delete config.extends
+      }
     }
   }
 
