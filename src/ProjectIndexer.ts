@@ -98,9 +98,7 @@ export class ProjectIndexer {
     }
 
     if (filesToIndex.length === 0) {
-      throw new Error(
-        `no indexable files in project '${this.options.projectDisplayName}'`
-      )
+      return
     }
 
     const jobs: ProgressBar | undefined = this.options.progressBar
