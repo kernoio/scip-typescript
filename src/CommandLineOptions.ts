@@ -51,7 +51,6 @@ export function mainCommand(
     )
   command
     .command('index')
-    .option('--cwd <path>', 'the working directory', process.cwd())
     .option('--pnpm-workspaces', 'whether to index all pnpm workspaces', false)
     .option('--yarn-workspaces', 'whether to index all yarn workspaces', false)
     .option(
@@ -72,11 +71,11 @@ export function mainCommand(
       '1mb'
     )
     .option('--filter <package>', 'index only the named package, with workspace-aware type resolution')
-    .argument('[projects...]')
-    .action((parsedProjects, parsedOptions) => {
+    .argument('[path]', 'directory to index (defaults to current working directory)')
+    .action((path, parsedOptions) => {
       const options = parsedOptions as MultiProjectOptions
+      options.cwd = path || process.cwd()
 
-      // Parse and validate human-provided --max-file-byte-size value
       options.maxFileByteSizeNumber = parseHumanByteSizeIntoNumber(
         options.maxFileByteSize ?? '1mb'
       )
@@ -88,14 +87,15 @@ export function mainCommand(
         return
       }
 
-      indexAction(parsedProjects as string[], options)
+      indexAction([], options)
     })
   command
     .command('detect')
-    .option('--cwd <path>', 'the working directory', process.cwd())
     .description('Detect project structure and workspace topology')
-    .action((parsedOptions: { cwd: string }) => {
-      detectAction(parsedOptions.cwd)
+    .argument('[path]', 'root directory to detect projects in')
+    .action((path: string | undefined, parsedOptions: { cwd?: string }) => {
+      const cwd = path || process.cwd()
+      detectAction(cwd)
     })
   return command
 }
