@@ -122,8 +122,8 @@ function indexFiltered(options: MultiProjectOptions): void {
     }
   }
 
-  const transformCompilerOptions = (compilerOptions: Record<string, unknown>): Record<string, unknown> => {
-    return {
+  const transformCompilerOptions = (compilerOptions: Record<string, unknown>, extraTypesPath?: string): Record<string, unknown> => {
+    const transformed: Record<string, unknown> = {
       ...compilerOptions,
       noEmit: true,
       skipLibCheck: true,
@@ -131,6 +131,11 @@ function indexFiltered(options: MultiProjectOptions): void {
       module: 'commonjs',
       moduleResolution: 'node',
     }
+    if (extraTypesPath) {
+      const existing = Array.isArray(transformed.typeRoots) ? transformed.typeRoots as string[] : []
+      transformed.typeRoots = [extraTypesPath, `${extraTypesPath}/@types`, ...existing]
+    }
+    return transformed
   }
 
   let config: ts.ParsedCommandLine | undefined
@@ -138,12 +143,13 @@ function indexFiltered(options: MultiProjectOptions): void {
     config = loadConfigFile(configFile, {
       transformCompilerOptions,
       include: ['./**/*'],
+      extraTypesPath: options.extraTypesPath,
     })
   } else {
     const syntheticCompilerOptions = transformCompilerOptions({
       allowJs: true,
       ...defaultCompilerOptions(),
-    })
+    }, options.extraTypesPath)
     const syntheticConfig = {
       compilerOptions: syntheticCompilerOptions,
       include: ['./**/*'],
@@ -255,8 +261,9 @@ if (require.main === module) {
 }
 
 interface LoadConfigOptions {
-  transformCompilerOptions?: (options: Record<string, unknown>) => Record<string, unknown>
+  transformCompilerOptions?: (options: Record<string, unknown>, extraTypesPath?: string) => Record<string, unknown>
   include?: string[]
+  extraTypesPath?: string
 }
 
 function loadConfigFile(
@@ -309,7 +316,7 @@ function loadConfigFile(
   }
 
   if (loadOptions?.transformCompilerOptions) {
-    config.compilerOptions = loadOptions.transformCompilerOptions(config.compilerOptions)
+    config.compilerOptions = loadOptions.transformCompilerOptions(config.compilerOptions, loadOptions?.extraTypesPath)
   }
 
   if (loadOptions?.include) {

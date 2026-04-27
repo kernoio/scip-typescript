@@ -19,6 +19,7 @@ export interface MultiProjectOptions {
   output: string
   indexedProjects: Set<string>
   filter?: string
+  extraTypesPath?: string
 }
 
 /** Configuration options to index a single TypeScript project. */
@@ -71,6 +72,7 @@ export function mainCommand(
       '1mb'
     )
     .option('--filter <package>', 'index only the named package, with workspace-aware type resolution')
+    .option('--extra-types-path <path>', '')
     .argument('[path]', 'directory to index (defaults to current working directory)')
     .action((path, parsedOptions) => {
       const options = parsedOptions as MultiProjectOptions
