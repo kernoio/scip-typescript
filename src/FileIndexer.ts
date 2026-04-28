@@ -227,10 +227,6 @@ export class FileIndexer {
       : node
     const symbol = this.checker.getSymbolAtLocation(rangeNode)
 
-    // If this is an alias, and the request came at the declaration location
-    // get the aliased symbol instead. This allows for goto def on an import e.g.
-    //   import {A, B} from "mod";
-    // to jump to the implementation directly.
     if (
       symbol?.declarations &&
       symbol.flags & ts.SymbolFlags.Alias &&

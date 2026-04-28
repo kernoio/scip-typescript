@@ -12,7 +12,7 @@
     "eslint": "eslint --cache '**/*.ts?(x)'",
     "build": "node ./node_modules/typescript/bin/tsc -b .",
     "test": "uvu -r tsm --ignore dist",
-    "bundle": "esbuild src/main.ts --bundle --minify --platform=node --format=cjs --outfile=dist/scip-typescript.cjs"
+    "bundle": "esbuild src/main.ts --bundle --minify --platform=node --format=cjs --outfile=dist/scip-typescript.cjs && mkdir -p dist/lib && cp node_modules/typescript/lib/lib.*.d.ts dist/lib/"
   },
   "repository": {
     "type": "git",

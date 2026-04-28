@@ -16,6 +16,24 @@ function createCompilerHost(
   projectOptions: ProjectOptions
 ): ts.CompilerHost {
   const host = ts.createCompilerHost(compilerOptions)
+
+  const originalGetSourceFile = host.getSourceFile
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+    let resolvedFileName = fileName
+    if (!ts.sys.fileExists(fileName) && path.basename(fileName).startsWith('lib.') && fileName.endsWith('.d.ts')) {
+      const bundledLib = path.join(__dirname, 'lib', path.basename(fileName))
+      if (ts.sys.fileExists(bundledLib)) {
+        resolvedFileName = bundledLib
+      } else if (projectOptions.extraTypesPath) {
+        const scaffoldLib = path.join(projectOptions.extraTypesPath, 'typescript', 'lib', path.basename(fileName))
+        if (ts.sys.fileExists(scaffoldLib)) {
+          resolvedFileName = scaffoldLib
+        }
+      }
+    }
+    return originalGetSourceFile(resolvedFileName, languageVersion, onError, shouldCreateNewSourceFile)
+  }
+
   if (!projectOptions.globalCaches) {
     return host
   }

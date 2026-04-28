@@ -40,7 +40,11 @@ jobs:
 
       - run: npm run bundle
 
+      - run: cd dist && zip -r scip-typescript.zip scip-typescript.cjs lib/
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.VERSION }}
-          files: dist/scip-typescript.cjs
+          files: |
+            dist/scip-typescript.cjs
+            dist/scip-typescript.zip
